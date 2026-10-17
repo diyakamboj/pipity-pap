@@ -95,8 +95,8 @@ export function AppSidebar({ open, width, onCollapse }: AppSidebarProps) {
             <Sparkles className="h-[18px] w-[18px] text-neutral-200" />
           </span>
           <div className="flex min-w-0 flex-col">
-            <span className="truncate text-sm font-semibold leading-tight text-sidebar-foreground">HR Agent</span>
-            <span className="truncate text-[11px] leading-tight text-muted-foreground">AI Operating System</span>
+            <span className="truncate text-sm font-semibold leading-tight text-sidebar-foreground">Gurt</span>
+            <span className="truncate text-[11px] leading-tight text-muted-foreground">Event Operations</span>
           </div>
         </div>
         <Button
@@ -329,7 +329,7 @@ export function AppSidebar({ open, width, onCollapse }: AppSidebarProps) {
           <DropdownMenuTrigger asChild>
             <button id="sidebar-user-menu-trigger" className="group flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-all duration-300 hover:-translate-y-px hover:bg-sidebar-accent active:scale-[0.99]">
               <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white/15 bg-neutral-300 transition-transform duration-300 group-hover:scale-105" />
-              <span className="truncate text-sm font-medium text-sidebar-foreground">Employee</span>
+              <span className="truncate text-sm font-medium text-sidebar-foreground">Organizer</span>
               <ChevronsUpDown className="ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground transition-colors duration-300 group-hover:text-sidebar-foreground" />
             </button>
           </DropdownMenuTrigger>
@@ -339,8 +339,8 @@ export function AppSidebar({ open, width, onCollapse }: AppSidebarProps) {
             className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-[240px]"
           >
             <DropdownMenuLabel className="flex flex-col">
-              <span className="text-[13px] font-medium text-foreground">Employee</span>
-              <span className="text-xs font-normal text-muted-foreground">Personal workspace</span>
+              <span className="text-[13px] font-medium text-foreground">Organizer</span>
+              <span className="text-xs font-normal text-muted-foreground">Event workspace</span>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem className="gap-2 text-[13px]">

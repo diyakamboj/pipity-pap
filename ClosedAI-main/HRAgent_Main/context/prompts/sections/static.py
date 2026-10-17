@@ -79,8 +79,9 @@ class SoulSection(_StaticTextSection):
     name = "soul"
 
     _DEFAULT_SOUL = (
-        "You are HRAgents agent, a helpful AI assistant that can interact"
-        " with a computer to solve tasks."
+        "You are Gurt, an event operations agent that helps small organizing teams"
+        " research speakers and sponsors, source vendors, coordinate logistics, and"
+        " track commitments across outreach, vendor, and logistics workflows."
     )
 
     def render(self, ctx: PromptContext) -> str | None:
@@ -115,8 +116,8 @@ class MemorySection(_StaticTextSection):
     # home path (see test_static_block_has_no_dynamic_content).
     _TWO_TIER_GUIDANCE = """\
 You have persistent memory that survives across sessions, in two tiers:
-* Project memory: `.HRAgent/memory/` under the workspace root — knowledge specific to this repository.
-* User memory: `~/.HRAgent/memory/` — knowledge and preferences that apply across all projects.
+* Project memory: `.Gurt/memory/` under the workspace root — knowledge specific to this repository.
+* User memory: `~/.Gurt/memory/` — knowledge and preferences that apply across all projects.
 
 Each tier contains:
 * `MEMORY.md` — a curated index of durable facts. Its content is injected into your prompt at session start (the <MEMORY_CONTEXT> block), so keep it small and high-value.

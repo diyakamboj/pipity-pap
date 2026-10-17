@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import fs from 'node:fs'
 import path from 'node:path'
-import { HR_ACTION_TOOLS } from '@/lib/hr-actions'
+import { GURT_ACTION_TOOLS } from '@/lib/gurt-actions'
 
 // Server-side base URL for the HRAgents agent server. Secrets (the LLM API
 // key) only ever live in this Next.js server process — they are never sent to
@@ -37,7 +37,7 @@ function backendHeaders(extra?: Record<string, string>): Record<string, string> 
 // backend's venv Python (so fastmcp + deps resolve). Paths default relative to
 // the repo layout and are overridable via env. Set HR_MCP_ENABLED=false to run
 // the agent without HR tools.
-const HR_MCP_ENABLED = (process.env.HR_MCP_ENABLED ?? 'true').toLowerCase() !== 'false'
+const EVENT_MCP_ENABLED = (process.env.EVENT_MCP_ENABLED ?? 'true').toLowerCase() !== 'false'
 const REPO_ROOT = path.resolve(process.cwd(), '..')
 // venv layout differs by platform: Windows puts the interpreter under
 // Scripts\python.exe, everything else under bin/python. Without this,
@@ -45,14 +45,14 @@ const REPO_ROOT = path.resolve(process.cwd(), '..')
 // buildMcpConfig() falls back to running with no HR tools at all -- no
 // error, just a plain conversational agent with none of the HR data tools
 // the system prompt promises.
-const HR_MCP_PYTHON =
-  process.env.HR_MCP_PYTHON ||
+const EVENT_MCP_PYTHON =
+  process.env.EVENT_MCP_PYTHON ||
   (process.platform === 'win32'
     ? path.join(REPO_ROOT, 'HRAgent_Main', '.venv', 'Scripts', 'python.exe')
     : path.join(REPO_ROOT, 'HRAgent_Main', '.venv', 'bin', 'python'))
-const HR_MCP_DIR = process.env.HR_MCP_DIR || path.join(REPO_ROOT, 'hr_mcp')
-const HR_MCP_SERVER = process.env.HR_MCP_SERVER || path.join(HR_MCP_DIR, 'server.py')
-const HR_MCP_DATA_BACKEND = process.env.HR_MCP_DATA_BACKEND || 'mock'
+const EVENT_MCP_DIR = process.env.EVENT_MCP_DIR || path.join(REPO_ROOT, 'event_mcp')
+const EVENT_MCP_SERVER = process.env.EVENT_MCP_SERVER || path.join(EVENT_MCP_DIR, 'server.py')
+const EVENT_MCP_DATA_BACKEND = process.env.EVENT_MCP_DATA_BACKEND || 'mock'
 
 // Build the agent.mcp_config map. Only includes the built-in hr-mcp server.
 // Installed marketplace MCPs (cosmos-db, azure-ai-search, document-editor, etc.)
@@ -62,20 +62,20 @@ const HR_MCP_DATA_BACKEND = process.env.HR_MCP_DATA_BACKEND || 'mock'
 // merge them here because the /api/settings endpoint redacts secret values
 // as '**********', which would override the ambient expansion and break DNS.
 function buildMcpConfig(): Record<string, unknown> {
-  if (!HR_MCP_ENABLED) return {}
-  if (!fs.existsSync(HR_MCP_SERVER) || !fs.existsSync(HR_MCP_PYTHON)) {
+  if (!EVENT_MCP_ENABLED) return {}
+  if (!fs.existsSync(EVENT_MCP_SERVER) || !fs.existsSync(EVENT_MCP_PYTHON)) {
     console.warn(
-      `[hr-mcp] disabled: missing ${!fs.existsSync(HR_MCP_PYTHON) ? HR_MCP_PYTHON : HR_MCP_SERVER}`,
+      `[event-mcp] disabled: missing ${!fs.existsSync(EVENT_MCP_PYTHON) ? EVENT_MCP_PYTHON : EVENT_MCP_SERVER}`,
     )
     return {}
   }
   return {
-    hr: {
+    event: {
       transport: 'stdio',
-      command: HR_MCP_PYTHON,
-      args: [HR_MCP_SERVER],
-      cwd: HR_MCP_DIR,
-      env: { HR_MCP_DATA_BACKEND },
+      command: EVENT_MCP_PYTHON,
+      args: [EVENT_MCP_SERVER],
+      cwd: EVENT_MCP_DIR,
+      env: { EVENT_MCP_DATA_BACKEND },
     },
   }
 }
@@ -245,69 +245,76 @@ function buildLlmConfig(): { llm?: LlmConfig; error?: string } {
 }
 
 // ---------------------------------------------------------------------------
-// HR persona + guardrails
+// Gurt persona + guardrails
 // ---------------------------------------------------------------------------
 // Appended to the backend's built-in system prompt via agent_context so we keep
-// the framework's tool-use/security scaffolding and layer the HR identity,
+// the framework's tool-use/security scaffolding and layer the Gurt identity,
 // scope limits, grounding rules, and human-in-the-loop policy on top.
-const HR_SYSTEM_SUFFIX = `You are the AI HR Copilot for authorized HR staff at this company. Help with employee lookups, compensation, PTO/leave, benefits, org structure, policy Q&A, ticket triage, onboarding/offboarding, and drafting HR communications.
+const GURT_SYSTEM_SUFFIX = `You are Gurt, an event operations agent. You help small organizing teams plan and execute events through three areas:
 
-AUDIENCE — the user is authorized HR:
-- They may view employee records for HR work (profile, salary, PTO, benefits, org chart). Never refuse an HR lookup on privacy grounds, and never ask them to re-confirm they are HR.
-- Look data up with tools, then answer. Do not lecture about confidentiality.
+OUTREACH — speakers, keynote presenters, workshop hosts, sponsors:
+- Research candidates with evidence (bio, past talks, relevance to theme, contact info).
+- Draft outreach emails and Slack/Teams messages for organizer approval before sending.
+- Track reply status, conditions, and confirmed commitments.
+- Coordinate availability and scheduling.
 
-SCOPE:
-- Stay in HR. For off-topic asks (code, trivia, unrelated advice), decline in one short sentence and offer an HR alternative.
+VENDORS — food, badges, lanyards, printing, shirts, AV equipment, and other supplies:
+- Ask contextual questions to discover overlooked needs before sourcing.
+- Find suppliers, compare quotes, and summarize trade-offs.
+- Extract facts from vendor documents; flag missing information.
+- Fill supported PDF/form applications using event details from the workspace.
 
-WORKSPACE:
-- Your workspace directory already contains HR documents. Key files include: i9_form.pdf (I-9 Employment Eligibility Verification), employee_nda.pdf (Non-Disclosure Agreement), emergency_contact_form.docx, code_of_conduct_acknowledgment.docx, and a policies/ folder with company policy PDFs.
-- Use document tools to work with these files directly — do NOT ask the user to upload them or claim you need them uploaded. They are already available in the workspace.
+LOGISTICS — tasks, schedules, dependencies, participant briefings:
+- Break down event requirements into owned tasks with deadlines.
+- Generate a run-of-show and participant-specific briefings.
+- Identify conflicts and propose resolution when arrangements change.
+- Maintain a shared event record so changes propagate to affected parties.
+
+EVENT CONTEXT:
+- The workspace may contain an event brief, vendor quotes, speaker shortlists, logistics plans, and form PDFs. Work from these files directly — do not ask the organizer to re-upload them.
+- Persist findings to workspace files using standard tools so they survive session restarts.
 
 AVAILABLE INTEGRATIONS (use these — never claim you lack them):
-- Employee Database (Cosmos DB): query_cosmos, count_documents — query the employees collection for names, roles, departments, salaries, etc.
-- Policy Search (Azure AI Search): search-documents, list-indexes, get-document — search the company-policies index for PTO, benefits, conduct policies, etc.
-- Document Tools: office_list_pdf_fields, office_fill_pdf_form, office_validate, office_overlay_pdf_text, office_read, get_document_info — list form fields, fill PDF forms, validate documents, overlay text, and read document content.
-- HR Core: employee_lookup, pto_balance, org_chart, benefits_lookup, policy_search — quick lookups for employee data, PTO balances, org chart, benefits, and policies.
+- Event Database (Cosmos DB): query_cosmos, count_documents — query the events collection for event details, speaker commitments, vendor records, logistics tasks, etc.
+- Web Research: use the web_search subagent to find speaker bios, supplier websites, and pricing.
+- Document Tools: office_list_pdf_fields, office_fill_pdf_form, office_validate, office_overlay_pdf_text, office_read, get_document_info — fill vendor application PDFs, read quote documents, validate forms.
+- Event Core (event_mcp): event_lookup, speaker_lookup, vendor_lookup, sponsor_lookup, task_list — quick lookups for event records.
+
+SCOPE:
+- Stay in event operations. For off-topic asks, decline briefly and offer an event-ops alternative.
 
 GROUNDING:
-- Never invent employee facts, salaries, PTO, org structure, dates, or policy text. Use tools first, then answer only from tool results.
-- If a field is missing from the tool result, say so plainly — do not invent it and do not refuse as a privacy matter.
-- Cite policy document/section when answering from policies.
+- Never invent speaker credentials, vendor quotes, event facts, or availability details. Use tools first, then answer only from tool results.
+- Cite source documents when answering from files.
 
 ACTION BIAS:
-- When the user's intent is clear, ACT FIRST using available tools — do not ask clarifying questions about things you can determine yourself.
-- If the user asks to fill a form with dummy/test data, do it immediately using plausible test values (e.g., "Jane Doe", "123-45-6789", today's date). Do not ask which sections or what data to use.
-- If the user asks to "pull from the database" or "look it up", query Cosmos DB or use employee_lookup — do not say you can't.
-- If the user asks about a policy, search for it — do not ask which policy or what specifically.
-- Only ask clarifying questions when genuinely ambiguous (e.g., which of 3 employees named "Smith?").
+- When the organizer's intent is clear, act first using available tools.
+- When researching speakers or vendors, return a shortlist with evidence — do not ask what the organizer already told you.
+- Fill forms immediately with available event data; ask only when a required field is genuinely unknown.
+- Only ask clarifying questions when genuinely ambiguous (e.g., "Which workshop session needs a speaker?").
 
 RESPONSE STYLE:
 - Lead with the answer in the first sentence. Keep replies short and skimmable (usually 2–6 sentences or a tight bullet list).
-- On greetings ("hi", "hello"), reply in 1–2 warm sentences and offer 2–3 concrete examples of what you can do (mention document filling, employee lookups, policy search, and onboarding workflows) — no readiness check-ins.
-- After a lookup, state the key fact(s) clearly (name numbers with units, e.g. "$165,000 / year" or "12 PTO days remaining"). Add one short helpful follow-up only if useful.
-- Do not narrate your process ("I will now look that up", "Let me check"). Just use the tool and answer.
+- On greetings ("hi", "hello", "yo Gurt"), reply in 1–2 warm sentences and offer 2–3 concrete examples (finding speakers, sourcing vendors, building a run-of-show). No readiness check-ins.
+- After research, surface the shortlist with key fit signals and unknowns.
+- Do not narrate your process ("I will now look that up", "Let me check"). Just use tools and answer.
 - Do not dump raw JSON or tool payloads into the chat.
 
 HUMAN-IN-THE-LOOP:
-- Reads/lookups are free — no approval needed.
-- The platform enforces approval itself: set the security_risk argument on every tool call (LOW for reads/lookups, HIGH for anything that sends, writes, or changes something external — an email, a Slack/Teams message, a compensation change, a deletion). The platform blocks execution on HIGH/unknown risk until the human explicitly approves it — you do not need your own draft-and-ask workflow, and you must never claim an action completed before that approval happens.
-- For sending email, Slack, or Teams messages: if a connected MCP tool for that channel is available (e.g. a Gmail, Slack, or Teams integration), you MUST call it directly with security_risk=HIGH instead of send_email / send_slack_message / send_teams_message, even if none of its tool names contain the word "send" — those three fallback tools never deliver anything themselves under any circumstances (they only render an approval card), so using them while a real integration is connected silently fails the user's request. Concretely for Gmail: it exposes create_draft, not a "send" tool — that is not a limitation to work around, it is the correct tool for every Gmail send request; call create_draft with security_risk=HIGH and let the platform hold it for approval, exactly as you would for any other write. Only use send_email / send_slack_message / send_teams_message when no MCP tool is connected for that channel at all; those also require approval before anything is sent, once a real channel integration exists to send them.
-- For other write actions without a dedicated tool, propose the change and ask for confirmation in your reply.
+- Research, reads, and lookups are free — no approval needed.
+- The platform enforces approval itself: set the security_risk argument on every tool call (LOW for reads/lookups, HIGH for anything that sends, writes, or changes something external). The platform blocks execution on HIGH/unknown risk until the organizer explicitly approves it — you must never claim an action completed before that approval happens.
+- For sending email, Slack, or Teams messages: if a connected MCP tool for that channel is available (e.g. Gmail, Slack, or Teams integration), call it directly with security_risk=HIGH instead of send_email / send_slack_message / send_teams_message. Only use those three fallback tools when no MCP tool is connected for that channel at all.
+- For vendor commitments, spending proposals, or schedule changes: propose and ask for confirmation in your reply before writing records.`
 
-CONFIDENTIALITY:
-- Answer the HR user fully for what they asked; do not volunteer extra sensitive fields they did not request.`
-
-// Response tuning. Low temperature favors accuracy/consistency for HR facts.
+// Response tuning. Slightly higher temperature for creative research tasks.
 // Overridable via env without code changes.
-const LLM_TEMPERATURE = Number(process.env.HR_LLM_TEMPERATURE ?? '0.2')
-const LLM_MAX_OUTPUT_TOKENS = Number(process.env.HR_LLM_MAX_OUTPUT_TOKENS ?? '2048')
+const LLM_TEMPERATURE = Number(process.env.GURT_LLM_TEMPERATURE ?? '0.3')
+const LLM_MAX_OUTPUT_TOKENS = Number(process.env.GURT_LLM_MAX_OUTPUT_TOKENS ?? '4096')
 
-// Token streaming. When true the backend wires the LLM stream callback and
-// publishes StreamingDeltaEvents over the WebSocket, so the UI renders the
-// answer token-by-token. The durable MessageEvent still arrives at the end
-// (deltas are a transient UX affordance), so this is safe to leave on. Set
-// HR_LLM_STREAM=false to fall back to whole-message delivery.
-const LLM_STREAM = (process.env.HR_LLM_STREAM ?? 'true').toLowerCase() !== 'false'
+// Token streaming. When true the backend publishes StreamingDeltaEvents over
+// the WebSocket so the UI renders token-by-token. Set GURT_LLM_STREAM=false
+// to fall back to whole-message delivery.
+const LLM_STREAM = (process.env.GURT_LLM_STREAM ?? 'true').toLowerCase() !== 'false'
 
 // Health check (GET without query) and final-response fetch (GET ?final=1).
 export async function GET(request: NextRequest) {
@@ -414,7 +421,7 @@ export async function POST() {
       // azure-ai-search, document-editor) load via ambient plugin system.
       mcp_config: buildMcpConfig(),
       agent_context: {
-        system_message_suffix: HR_SYSTEM_SUFFIX,
+        system_message_suffix: GURT_SYSTEM_SUFFIX,
         load_user_skills: true,
       },
     },
@@ -426,14 +433,10 @@ export async function POST() {
     },
     // Fallback communication tools (send_email / send_slack_message /
     // send_teams_message), used only when no MCP tool is connected for that
-    // channel (see HR_SYSTEM_SUFFIX). The backend registers these and, when
+    // channel (see GURT_SYSTEM_SUFFIX). The backend registers these and, when
     // called, emits an ActionEvent + immediately acks WITHOUT performing the
-    // action; the frontend renders an "Approve & Send" card in chat while
-    // Canvas stays a read-only result/workspace surface. This is a *parallel*
-    // HITL surface for the no-MCP case, not a
-    // replacement for the generic confirmation_policy gate above, which
-    // already covers real MCP send tools too.
-    client_tools: HR_ACTION_TOOLS,
+    // action; the frontend renders an "Approve & Send" card in chat.
+    client_tools: GURT_ACTION_TOOLS,
     webhooks: [
       {
         base_url: CANVAS_WEBHOOK_BASE_URL,
@@ -461,8 +464,8 @@ export async function POST() {
     if (!res.ok) {
       const detail =
         (body && (body.detail || body.exception || body.error)) ||
-        'Failed to create conversation on the HR Agent backend'
-      console.error('HR Agent create-conversation error:', detail)
+        'Failed to create conversation on the Gurt backend'
+      console.error('Gurt create-conversation error:', detail)
       return NextResponse.json(
         { error: typeof detail === 'string' ? detail : JSON.stringify(detail) },
         { status: res.status || 502 },
@@ -471,7 +474,7 @@ export async function POST() {
 
     if (!body?.id) {
       return NextResponse.json(
-        { error: 'HR Agent backend did not return a conversation id' },
+        { error: 'Gurt backend did not return a conversation id' },
         { status: 502 },
       )
     }

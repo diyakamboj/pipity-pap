@@ -16,8 +16,8 @@ const inter = Inter({
 })
 
 export const metadata: Metadata = {
-  title: "HRAgent",
-  description: "Chat with intelligent HR agents. Manage workforce, streamline processes, and automate your HR workflow.",
+  title: "Gurt",
+  description: "AI-powered event operations. Research speakers and sponsors, source vendors, and coordinate logistics for your next event.",
   icons: null,
 }
 

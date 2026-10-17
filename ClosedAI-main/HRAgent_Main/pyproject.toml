@@ -2,9 +2,9 @@
 # -workspace / -agent-server, whose directories were removed during the
 # cleanup). All code now lives at the repo root under top-level packages.
 [project]
-name = "HRAgent"
+name = "Gurt"
 version = "1.37.1"
-description = "HRAgent agent server and SDK (flattened single package)"
+description = "Gurt event operations agent server and SDK"
 requires-python = ">=3.13"
 dependencies = [
     "aiohttp>=3.13.3",

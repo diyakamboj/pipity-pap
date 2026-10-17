@@ -5,7 +5,7 @@ import { create } from 'zustand'
 // Type-only import (erased at build time, so no runtime import cycle with
 // agent-runtime, which imports the store's `useChat` value).
 import type { EventCategory, EventStatus } from './agent-runtime'
-import { actionTitle } from './hr-actions'
+import { actionTitle } from './gurt-actions'
 
 export type Reaction = 'up' | 'down' | null
 

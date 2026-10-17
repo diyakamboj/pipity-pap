@@ -1,15 +1,15 @@
 "use client"
 
 import { useState } from "react"
-import { ImageIcon, Lightbulb, FileText } from "lucide-react"
+import { Users, Store, ClipboardList } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ParticleOrb } from "@/components/particle-orb"
 import { ChatComposer } from "@/components/chat-composer"
 
 const QUICK_ACTIONS = [
-  { icon: ImageIcon, label: "Create Image", prompt: "Create an image of " },
-  { icon: Lightbulb, label: "Brainstorm", prompt: "Help me brainstorm ideas about " },
-  { icon: FileText, label: "Make a plan", prompt: "Make a plan for " },
+  { icon: Users, label: "Find speakers", prompt: "Find speaker candidates for our " },
+  { icon: Store, label: "Source vendors", prompt: "Find vendors for " },
+  { icon: ClipboardList, label: "Build run-of-show", prompt: "Create a run-of-show for " },
 ]
 
 export function ChatLanding() {
@@ -29,7 +29,7 @@ export function ChatLanding() {
         className="dream-in mb-8 text-center font-[var(--font-heading)] text-4xl font-semibold tracking-tight text-foreground text-balance"
         style={{ animationDelay: "0.15s" }}
       >
-        Ready to Create Something New?
+        What are we organizing today?
       </h1>
 
       <div className="mb-8 flex flex-wrap items-center justify-center gap-3">

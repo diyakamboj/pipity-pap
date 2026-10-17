@@ -1,16 +1,15 @@
-# AI HR Copilot — Startup Guide
+# Gurt — Startup Guide
 
-How to boot the whole system on Windows (PowerShell). There are **two long‑running
-processes**: the Python **backend** (HRAgents agent server) and the Next.js
-**frontend** (HR Copilot UI). The HR data tools (`hr-mcp`) start **automatically** as a
+How to boot the whole system on Windows (PowerShell). There are **two long-running
+processes**: the Python **backend** (Gurt agent server) and the Next.js
+**frontend** (Gurt UI). The event data tools (`event-mcp`) start **automatically** as a
 subprocess of the backend — you don't launch them yourself.
 
 ```
 ClosedAI/
 ├─ HRAgent_Main/     ← backend (FastAPI agent server) — Terminal 1
-├─ frontend/         ← frontend (Next.js UI)          — Terminal 2
-├─ hr_mcp/           ← HR data tools (auto-spawned by the backend)
-└─ chat_interface/   ← previous UI (kept for reference; not used at runtime)
+├─ chat_interface/   ← frontend (Next.js UI)          — Terminal 2
+└─ event_mcp/        ← event data tools (auto-spawned by the backend)
 ```
 
 ---
@@ -27,16 +26,16 @@ Run these once. If you've already used the app, skip to **Daily boot-up**.
    ```
 
    This creates `HRAgent_Main\.venv` with all backend deps (including `fastmcp`,
-   which `hr-mcp` needs).
+   which `event-mcp` needs).
 
 2. **Frontend Node dependencies** (needs Node 18+):
 
    ```powershell
-   cd "C:\Users\ishaa\OneDrive - UW\Academic\Coding\ClosedAI\frontend"
+   cd "C:\Users\ishaa\OneDrive - UW\Academic\Coding\ClosedAI\chat_interface"
    npm install
    ```
 
-3. **Frontend environment file** — `frontend\.env.local` is configured for **TokenRouter**:
+3. **Frontend environment file** — `chat_interface\.env.local` is configured for **TokenRouter**:
 
    ```
    LLM_PROVIDER=tokenrouter
@@ -67,7 +66,7 @@ Wait until you see: `Uvicorn running on http://127.0.0.1:8001`.
 ### Terminal 2 — Frontend
 
 ```powershell
-cd "C:\Users\ishaa\OneDrive - UW\Academic\Coding\ClosedAI\frontend"
+cd "C:\Users\ishaa\OneDrive - UW\Academic\Coding\ClosedAI\chat_interface"
 npm run dev
 ```
 
@@ -78,10 +77,11 @@ Wait until you see: `Ready` and `Local: http://localhost:3000`.
 Go to **<http://localhost:3000>** in your browser (Intake is the default home).
 Use **New task** (or open **<http://localhost:3000/chat>**) and try:
 
-- `What is Sarah Chen's PTO balance?` → PTO card appears in the Side Canvas.
-- `Show me Marcus Johnson's org chart` → org-chart module.
-- `Draft an email to sarah.chen@example.com about the PTO policy` → an
-  **Approve & Send** card appears on the canvas (nothing sends until you click).
+- `Yo Gurt, find speakers for our AI workshop` → speaker shortlist appears in the Side Canvas.
+- `Find catering vendors under $15/head` → vendor quote comparison module.
+- `Draft an outreach email to Dr. Alicia Chen` → an
+  **Approve & Send** card appears in chat (nothing sends until you click).
+- `Build the run-of-show task list` → task board renders in Side Canvas.
 
 ---
 
@@ -115,8 +115,8 @@ the processes.
   frontend** (env is only read at startup).
 - **Changed `.env.local`?** → restart Terminal 2 (`npm run dev`). Code changes hot-
   reload, but env changes do not.
-- **Side Canvas / tools not working** → ensure `hr_mcp` deps exist in the backend
-  venv (`uv sync` in `HRAgent_Main`). The backend logs a `[hr-mcp] disabled: ...`
+- **Side Canvas / tools not working** → ensure `event_mcp` deps exist in the backend
+  venv (`uv sync` in `HRAgent_Main`). The backend logs a `[event-mcp] disabled: ...`
   warning if it can't find the tool server or its Python.
 
 ---
@@ -126,15 +126,15 @@ the processes.
 Verifies the backend + agent + tools without the browser (needs both servers up):
 
 ```powershell
-cd "C:\Users\ishaa\OneDrive - UW\Academic\Coding\ClosedAI\frontend"
-node scripts/hr-test.mjs "What is Sarah Chen's PTO balance?"
+cd "C:\Users\ishaa\OneDrive - UW\Academic\Coding\ClosedAI\chat_interface"
+node scripts/gurt-test.mjs "Find speakers for our AI workshop"
 ```
 
-You should see `ACTION → pto_balance`, `OBSERVATION ←`, and a grounded `FINAL:` answer.
+You should see `ACTION → speaker_lookup`, `OBSERVATION ←`, and a grounded `FINAL:` answer.
 
 ## Switching LLM provider (TokenRouter → Groq / OpenAI / Azure)
 
-No code changes — edit `frontend\.env.local`, then restart the frontend:
+No code changes — edit `chat_interface\.env.local`, then restart the frontend:
 
 - **TokenRouter:** `LLM_PROVIDER=tokenrouter`, set `TOKENROUTER_API_KEY`, `TOKENROUTER_BASE_URL` (default `https://api.tokenrouter.com/v1`), `TOKENROUTER_MODEL` (default `moonshotai/kimi-k3-free`).
 - **Groq:** `LLM_PROVIDER=groq`, set `GROQ_API_KEY=gsk-...` (model `GROQ_MODEL`, default `llama-3.3-70b-versatile`).

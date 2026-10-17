@@ -84,7 +84,7 @@ class InMemoryFileStore(FileStore):
         import tempfile
 
         return os.path.join(
-            tempfile.gettempdir(), f"HRAgent_inmemory_{self._instance_id}", path
+            tempfile.gettempdir(), f"Gurt_inmemory_{self._instance_id}", path
         )
 
     @contextmanager

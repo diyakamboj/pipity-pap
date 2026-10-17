@@ -58,10 +58,11 @@ logger = get_logger(__name__)
 # SOUL.md is the agent's identity file (~/.HRAgent/SOUL.md).  When present
 # it replaces the default identity in the system prompt.
 
-_SOUL_PATH = os.path.join(os.path.expanduser("~"), ".HRAgent", "SOUL.md")
+_SOUL_PATH = os.path.join(os.path.expanduser("~"), ".Gurt", "SOUL.md")
 _DEFAULT_SOUL = (
-    "You are HRAgents agent, a helpful AI assistant that can interact"
-    " with a computer to solve tasks."
+    "You are Gurt, an event operations agent that helps small organizing teams"
+    " research speakers and sponsors, source vendors, coordinate logistics, and"
+    " track commitments across outreach, vendor, and logistics workflows."
 )
 
 # Built-in prompt dir. The registry only stands in for built-in prompts here; a

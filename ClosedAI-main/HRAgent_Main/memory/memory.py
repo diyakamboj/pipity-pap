@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 
 __all__ = ["MEMORY_CHAR_BUDGET", "MEMORY_INDEX_RELPATH", "load_memory"]
 
-MEMORY_INDEX_RELPATH: Final[str] = ".HRAgent/memory/MEMORY.md"
+MEMORY_INDEX_RELPATH: Final[str] = ".Gurt/memory/MEMORY.md"
 MEMORY_CHAR_BUDGET: Final[int] = 6000
 _TRUNCATION_NOTICE: Final[str] = "[earlier memory truncated]"
 
