@@ -1,0 +1,32 @@
+{
+  "name": "postgres",
+  "version": "1.0.0",
+  "description": "PostgreSQL integration — schema inspection and SQL queries via Postgres MCP Pro. Restricted (read-only, time-limited) mode by default.",
+  "category": "Databases",
+  "authentication": "DATABASE_URI",
+  "tools": [
+    "query",
+    "get_schema",
+    "list_databases",
+    "list_tables",
+    "describe_table"
+  ],
+  "mcp": true,
+  "setup": {
+    "auth": {
+      "method": "env",
+      "label": "Database connection string",
+      "hint": "Read-only restricted mode is enforced by the server (no writes, time-limited)."
+    },
+    "fields": [
+      {
+        "name": "DATABASE_URI",
+        "label": "Postgres connection string",
+        "type": "password",
+        "secret": true,
+        "required": true,
+        "placeholder": "postgresql://user:password@host:5432/dbname"
+      }
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "cosmos-db": {
+      "transport": "stdio",
+      "command": "python",
+      "args": [
+        "${SKILL_ROOT}/server/stdio_main.py"
+      ],
+      "env": {
+        "COSMOS_URI": "${COSMOS_URI}",
+        "COSMOS_KEY": "${COSMOS_KEY}",
+        "COSMOS_DATABASE": "${COSMOS_DATABASE}",
+        "COSMOS_CONTAINER": "${COSMOS_CONTAINER}"
+      }
+    }
+  }
+}

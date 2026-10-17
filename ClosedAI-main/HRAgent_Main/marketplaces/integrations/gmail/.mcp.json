@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "gmail": {
+      "transport": "streamable-http",
+      "url": "https://gmailmcp.googleapis.com/mcp/v1",
+      "auth": {
+        "strategy": "oauth2",
+        "authentication": {
+          "type": "oauth",
+          "provider": "google",
+          "scopes": [
+            "https://www.googleapis.com/auth/gmail.modify",
+            "https://www.googleapis.com/auth/gmail.compose",
+            "https://www.googleapis.com/auth/gmail.labels",
+            "https://www.googleapis.com/auth/gmail.send"
+          ]
+        }
+      }
+    }
+  }
+}

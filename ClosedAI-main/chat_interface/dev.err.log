@@ -1,0 +1,23 @@
+ ⚠ You are using a non-standard "NODE_ENV" value in your environment. This creates inconsistencies in the project and is strongly advised against. Read more: https://nextjs.org/docs/messages/non-standard-node-env
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+ ⚠ Server is approaching the used memory threshold, restarting...
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+
+<--- Last few GCs --->
+
+[14824:0000027BC37FD000]  2555963 ms: Scavenge (interleaved) 7984.8 (8139.0) -> 7977.8 (8174.2) MB, pooled: 0 MB, 179.03 / 0.00 ms  (average mu = 0.171, current mu = 0.039) allocation failure; 
+[14824:0000027BC37FD000]  2562615 ms: Mark-Compact (reduce) 8013.1 (8182.0) -> 7992.9 (8131.9) MB, pooled: 0 MB, 3515.42 / 12.71 ms  (+ 2312.0 ms in 458 steps since start of marking, biggest step 5.8 ms, walltime since start of marking 6362 ms) (average m
+FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory
+----- Native stack trace -----
+
+ 1: 00007FF727ACCFF9 node::OnFatalError+1193
+ 2: 00007FF7286FEDB7 v8::Function::NewInstance+423
+ 3: 00007FF728501097 v8::base::AddressSpaceReservation::AddressSpaceReservation+320967
+ 4: 00007FF728504D94 v8::base::AddressSpaceReservation::AddressSpaceReservation+336580
+ 5: 00007FF728513C4C v8::internal::StrongRootAllocatorBase::deallocate_impl+16300
+ 6: 00007FF72851348B v8::internal::StrongRootAllocatorBase::deallocate_impl+14315
+ 7: 00007FF72984F32D v8::base::UnsignedDivisionByConstant<unsigned __int64>+2790749
+ 8: 00007FF7284FEBC0 v8::base::AddressSpaceReservation::AddressSpaceReservation+311536
+ 9: 00007FF728582049 v8::Unlocker::~Unlocker+9273
+10: 00007FF7280F8738 v8::String::Utf8Value::~Utf8Value+142664
+11: 0000027BEB73733A 

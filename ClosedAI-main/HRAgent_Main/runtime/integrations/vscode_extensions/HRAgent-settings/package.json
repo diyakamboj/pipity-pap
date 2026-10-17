@@ -1,0 +1,12 @@
+{
+  "name": "HRAgent-settings",
+  "displayName": "HRAgents Settings",
+  "description": "Auto-configure VSCode settings for HRAgents",
+  "version": "1.0.0",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["*"],
+  "main": "./extension.js"
+}

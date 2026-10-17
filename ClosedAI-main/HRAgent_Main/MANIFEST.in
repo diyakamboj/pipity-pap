@@ -1,0 +1,39 @@
+# This MANIFEST.in file tells setuptools which files to include
+# in the sdist package distribution used for building docker image
+
+# ==============================================================================
+# Root-level workspace files
+# ==============================================================================
+include pyproject.toml
+include uv.lock
+
+# ==============================================================================
+# Top-level packages (flattened single project)
+# ==============================================================================
+recursive-include core *.py
+recursive-include context *.py
+recursive-include models *.py
+recursive-include tools *.py
+recursive-include plugins *.py
+recursive-include skills *.py
+recursive-include subagents *.py
+recursive-include mcp_integration *.py
+recursive-include security *.py
+recursive-include utilities *.py
+recursive-include configuration *.py
+recursive-include runtime *.py
+recursive-include memory *.py
+
+# Template files
+recursive-include core *.j2
+recursive-include tools *.j2
+recursive-include runtime *.j2
+
+# Type marker
+recursive-include tools py.typed
+
+# PyInstaller spec
+include runtime/server/agent-server.spec
+
+# VSCode extensions
+recursive-include runtime/integrations/vscode_extensions *

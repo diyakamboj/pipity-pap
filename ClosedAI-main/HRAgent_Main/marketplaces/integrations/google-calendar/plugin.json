@@ -1,0 +1,30 @@
+{
+  "name": "google-calendar",
+  "version": "1.0.0",
+  "description": "Google Calendar integration \u2014 events, scheduling and availability via official Google MCP server (https://calendarmcp.googleapis.com/mcp/v1, OAuth2).",
+  "category": "Productivity",
+  "authentication": "Google OAuth 2.0",
+  "tools": [
+    "list_events",
+    "get_event",
+    "list_calendars",
+    "suggest_time",
+    "create_event",
+    "update_event",
+    "delete_event",
+    "respond_to_event",
+    "search_events"
+  ],
+  "mcp": true,
+  "setup": {
+    "auth": {
+      "method": "oauth2",
+      "label": "Connect with Google",
+      "hint": "Authorizes via Google's OAuth 2.0 flow using this deployment's registered Google app. No setup needed here -- just connect.",
+      "verify_tool_call": {
+        "name": "list_calendars",
+        "arguments": {}
+      }
+    }
+  }
+}

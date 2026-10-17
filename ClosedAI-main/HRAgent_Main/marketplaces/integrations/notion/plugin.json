@@ -1,0 +1,45 @@
+{
+  "name": "notion",
+  "version": "1.0.0",
+  "description": "Notion integration — pages, databases and blocks via the official Notion MCP server (https://mcp.notion.com/mcp, OAuth).",
+  "category": "Productivity",
+  "authentication": "OAuth 2.0",
+  "tools": [
+    "API-get-user",
+    "API-get-users",
+    "API-get-self",
+    "API-post-search",
+    "API-get-block-children",
+    "API-patch-block-children",
+    "API-retrieve-a-block",
+    "API-update-a-block",
+    "API-delete-a-block",
+    "API-retrieve-a-page",
+    "API-patch-page",
+    "API-post-page",
+    "API-retrieve-a-page-property",
+    "API-retrieve-a-comment",
+    "API-create-a-comment",
+    "API-query-data-source",
+    "API-retrieve-a-data-source",
+    "API-update-a-data-source",
+    "API-create-a-data-source",
+    "API-list-data-source-templates",
+    "API-retrieve-a-database",
+    "API-move-page",
+    "API-retrieve-page-markdown",
+    "API-update-page-markdown"
+  ],
+  "mcp": true,
+  "setup": {
+    "auth": {
+      "method": "oauth2",
+      "label": "Connect with Notion",
+      "hint": "Authorizes via Notion's OAuth flow. No setup needed here -- just connect.",
+      "verify_tool_call": {
+        "name": "API-post-search",
+        "arguments": {}
+      }
+    }
+  }
+}

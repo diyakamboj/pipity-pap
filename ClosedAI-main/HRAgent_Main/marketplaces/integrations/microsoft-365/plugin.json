@@ -1,0 +1,48 @@
+{
+  "name": "microsoft-365",
+  "version": "1.0.0",
+  "description": "Microsoft 365 integration — Outlook mail/calendar, contacts, OneDrive and (org mode) Teams/SharePoint via ms-365-mcp-server.",
+  "category": "Communication",
+  "authentication": "Microsoft Entra ID (OAuth)",
+  "tools": [
+    "send_email",
+    "get_emails",
+    "get_calendar_events",
+    "create_calendar_event",
+    "get_contacts",
+    "get_files",
+    "search_files"
+  ],
+  "mcp": true,
+  "setup": {
+    "auth": {
+      "method": "env",
+      "label": "Microsoft Entra ID (OAuth)",
+      "hint": "The M365 server performs its own interactive MSAL login (a browser window it opens itself). All fields are optional: it falls back to a built-in Microsoft public client and the 'common' (any Microsoft account) tenant when left blank -- only set these if you need your own Azure app registration."
+    },
+    "fields": [
+      {
+        "name": "MS365_MCP_CLIENT_ID",
+        "label": "Azure App Client ID",
+        "type": "text",
+        "required": false,
+        "hint": "Optional — leave blank to use the server's built-in Microsoft public client."
+      },
+      {
+        "name": "MS365_MCP_CLIENT_SECRET",
+        "label": "Azure App Client Secret",
+        "type": "password",
+        "secret": true,
+        "required": false,
+        "hint": "Only needed for a confidential (secret-bearing) Azure app; the default public client needs none."
+      },
+      {
+        "name": "MS365_MCP_TENANT_ID",
+        "label": "Azure Tenant ID",
+        "type": "text",
+        "required": false,
+        "hint": "Optional — leave blank to use 'common' (works with any Microsoft personal or work account)."
+      }
+    ]
+  }
+}

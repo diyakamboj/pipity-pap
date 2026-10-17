@@ -1,0 +1,113 @@
+{
+  "version": 1,
+  "skills": {
+    "API Integration Specialist": {
+      "source": "davila7/claude-code-templates",
+      "sourceType": "github",
+      "skillPath": "cli-tool/components/skills/development/api-integration-specialist/SKILL.md",
+      "computedHash": "79be72a11a9a834165f0e123a1e6234cb737928c00bbe6612820c74db0c4dd94"
+    },
+    "applicationinsights-web-ts": {
+      "source": "microsoft/skills",
+      "sourceType": "github",
+      "skillPath": ".github/skills/applicationinsights-web-ts/SKILL.md",
+      "computedHash": "8c508381369a266e495151ab62355274b198f494df04e0e7e8699d382bd716a8"
+    },
+    "architecture-patterns": {
+      "source": "secondsky/claude-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/architecture-patterns/skills/architecture-patterns/SKILL.md",
+      "computedHash": "f6c1e6524aeff32cf49c71ab7130f21fcc19e46709129fbd07ce236bdc75ab11"
+    },
+    "cloud-solution-architect": {
+      "source": "microsoft/skills",
+      "sourceType": "github",
+      "skillPath": ".github/skills/cloud-solution-architect/SKILL.md",
+      "computedHash": "04615187312878e9e03535b6c8e293557bc685b796f8665a9eb16c72277774a7"
+    },
+    "codebase-analysis": {
+      "source": "solatis/claude-config",
+      "sourceType": "github",
+      "skillPath": "skills/codebase-analysis/SKILL.md",
+      "computedHash": "64c95c7200c5699f3417a482191ddcc9e781bf85f4935bca17dbd8bb483f4fe9"
+    },
+    "continual-learning": {
+      "source": "microsoft/skills",
+      "sourceType": "github",
+      "skillPath": ".github/skills/continual-learning/SKILL.md",
+      "computedHash": "7e6eef17feb93dfbbb3d2d2caca76ddc7da65f7ae41f7cdd6d4478c24c278044"
+    },
+    "copilot-sdk": {
+      "source": "microsoft/skills",
+      "sourceType": "github",
+      "skillPath": ".github/skills/copilot-sdk/SKILL.md",
+      "computedHash": "de78052a97cd06884e4478f37b2f8155250c36a1a38c16f1e7d9aa1c1a74e4b3"
+    },
+    "debugview": {
+      "source": "microsoft/skills",
+      "sourceType": "github",
+      "skillPath": ".github/skills/debugview/SKILL.md",
+      "computedHash": "9e1b6f2166edbfb49e8c629092dc6603ba454d7c8913a9da87caa8b068e88927"
+    },
+    "entra-agent-id": {
+      "source": "microsoft/skills",
+      "sourceType": "github",
+      "skillPath": ".github/skills/entra-agent-id/SKILL.md",
+      "computedHash": "3e6287dabc9252a396293943cc875a202e8953fd483a9fb57c5546c9f9885bd4"
+    },
+    "frontend-design-review": {
+      "source": "microsoft/skills",
+      "sourceType": "github",
+      "skillPath": ".github/skills/frontend-design-review/SKILL.md",
+      "computedHash": "ab7eeeef16d3583172fe0a91a42b85c79cd5e29f79e027dbaa886fce5087e055"
+    },
+    "github-issue-creator": {
+      "source": "microsoft/skills",
+      "sourceType": "github",
+      "skillPath": ".github/skills/github-issue-creator/SKILL.md",
+      "computedHash": "4d4ef1ce3824ef0f9690a0f7d081f17552db082541063e42d1f557203608d517"
+    },
+    "kql": {
+      "source": "microsoft/skills",
+      "sourceType": "github",
+      "skillPath": ".github/skills/kql/SKILL.md",
+      "computedHash": "538a4a053eb0bb16ebd4479c13e143ee214c4c5217041cb615c1409122d9652d"
+    },
+    "mcp-builder": {
+      "source": "microsoft/skills",
+      "sourceType": "github",
+      "skillPath": ".github/skills/mcp-builder/SKILL.md",
+      "computedHash": "d1c0c0cc13f74fac3202f6993778c3fb06737e09754ed73fb985c4e34a7a12d4"
+    },
+    "microsoft-docs": {
+      "source": "microsoft/skills",
+      "sourceType": "github",
+      "skillPath": ".github/skills/microsoft-docs/SKILL.md",
+      "computedHash": "4f74ef0fb7127b151a00eee34cf7484414ea85965a2e7681b5775e9ee9484b37"
+    },
+    "podcast-generation": {
+      "source": "microsoft/skills",
+      "sourceType": "github",
+      "skillPath": ".github/skills/podcast-generation/SKILL.md",
+      "computedHash": "bc314c7c2ab4f60959bc2cfa44502ac296f809fc1993f655c8b47277a06eb58e"
+    },
+    "security-engineering": {
+      "source": "89jobrien/steve",
+      "sourceType": "github",
+      "skillPath": "steve/skills/security-engineering/SKILL.md",
+      "computedHash": "e64b982a2bf508568a32883ad7ee87ddc92bb8c9ab555305a40d6b5e75f6963f"
+    },
+    "skill-creator": {
+      "source": "microsoft/skills",
+      "sourceType": "github",
+      "skillPath": ".github/skills/skill-creator/SKILL.md",
+      "computedHash": "d912ae7c53ae76ee1714c499c34c246ddbc847d48b7982247e1bdedd573cf0ae"
+    },
+    "testing-strategy": {
+      "source": "anthropics/knowledge-work-plugins",
+      "sourceType": "github",
+      "skillPath": "engineering/skills/testing-strategy/SKILL.md",
+      "computedHash": "1245d1a92d7be2632848f97d0fe12ac1f0e98f452d88ecc7da0a7cc931dc1b3d"
+    }
+  }
+}

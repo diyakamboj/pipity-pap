@@ -1,0 +1,29 @@
+{
+  "name": "google-drive",
+  "version": "1.0.0",
+  "description": "Google Drive integration \u2014 list, read, search and upload files via official Google MCP server (https://drivemcp.googleapis.com/mcp/v1, OAuth2).",
+  "category": "Storage",
+  "authentication": "Google OAuth 2.0",
+  "tools": [
+    "copy_file",
+    "create_file",
+    "download_file_content",
+    "get_file_metadata",
+    "get_file_permissions",
+    "list_recent_files",
+    "read_file_content",
+    "search_files"
+  ],
+  "mcp": true,
+  "setup": {
+    "auth": {
+      "method": "oauth2",
+      "label": "Connect with Google",
+      "hint": "Authorizes via Google's OAuth 2.0 flow using this deployment's registered Google app. No setup needed here -- just connect.",
+      "verify_tool_call": {
+        "name": "list_recent_files",
+        "arguments": {}
+      }
+    }
+  }
+}

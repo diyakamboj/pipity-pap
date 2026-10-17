@@ -1,0 +1,38 @@
+name: CI - AI HR Copilot
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build and Validate
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: chat_interface
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: chat_interface/package-lock.json
+          
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Security audit
+        run: npm audit --audit-level=high
+
+      - name: Build application
+        run: npm run build

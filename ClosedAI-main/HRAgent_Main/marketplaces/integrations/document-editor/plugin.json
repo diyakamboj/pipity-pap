@@ -1,0 +1,31 @@
+{
+  "name": "document-editor",
+  "version": "1.0.0",
+  "description": "Office document editing — fill PDF AcroForm/XFA fields, overlay text on flat PDFs, read/validate/diff DOCX/XLSX/PPTX, and fill DOCX mail-merge templates. Preserves the original document instead of converting it (no PDF->Word->PDF round-trips).",
+  "category": "Documents",
+  "authentication": "none",
+  "tools": [
+    "list_formats",
+    "get_document_info",
+    "office_read",
+    "office_validate",
+    "office_diff_documents",
+    "office_check_consistency",
+    "office_export_pdf",
+    "office_list_pdf_fields",
+    "office_fill_pdf_form",
+    "office_analyze_pdf_layout",
+    "office_overlay_pdf_text",
+    "office_template_detect",
+    "office_template_fill",
+    "office_template_batch"
+  ],
+  "mcp": true,
+  "setup": {
+    "auth": {
+      "method": "none",
+      "hint": "Operates on local file paths only -- no credentials needed. Requires office-oxide-mcp to be built once via `cargo install --git https://github.com/Aimino-Tech/opendocswork-mcp` (see README.md); this is a one-time machine setup step, not something this plugin installs automatically."
+    },
+    "fields": []
+  }
+}

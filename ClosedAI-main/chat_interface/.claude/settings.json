@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E "\\(main|config|api\\)\\\\.py$\")",
+      "Bash(xargs grep -l "WebSocket\\\\|websocket\\\\|streaming\\\\|sse\\\\|SSE\")",
+      "Skill(update-config)"
+    ],
+    "defaultMode": "auto",
+    "disableAutoMode": "disable",
+    "disableBypassPermissionsMode": "disable"
+  }
+}

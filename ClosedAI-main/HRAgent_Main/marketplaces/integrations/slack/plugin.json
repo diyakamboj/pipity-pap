@@ -1,0 +1,28 @@
+{
+  "name": "slack",
+  "version": "1.0.0",
+  "description": "Slack integration \u2014 channels, messages and search via official Slack MCP server (https://mcp.slack.com/mcp, OAuth 2.1).",
+  "category": "Communication",
+  "authentication": "OAuth 2.1 (Slack App)",
+  "tools": [
+    "send_message",
+    "get_channel_history",
+    "list_channels",
+    "get_users",
+    "search_messages",
+    "create_channel",
+    "get_channel_members"
+  ],
+  "mcp": true,
+  "setup": {
+    "auth": {
+      "method": "oauth2",
+      "label": "Connect with Slack",
+      "hint": "Authorizes via Slack's OAuth 2.1 flow using this deployment's registered Slack app. No setup needed here -- just connect.",
+      "verify_tool_call": {
+        "name": "list_channels",
+        "arguments": {}
+      }
+    }
+  }
+}

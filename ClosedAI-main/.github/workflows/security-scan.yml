@@ -1,0 +1,104 @@
+name: Security Scan - ClosedAI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  frontend-source-scan:
+    name: Frontend Source Code Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep security scan
+        run: |
+          python -m pip install semgrep
+          semgrep scan --config p/security-audit --error chat_interface
+  backend-dependency-scan:
+    name: Backend Dependency Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pip-audit
+        run: python -m pip install pip-audit
+
+      - name: Audit backend dependencies
+        run: pip-audit HRAgent_Main
+  backend-source-scan:
+      name: Backend Source Code Scan
+      runs-on: ubuntu-latest
+
+      steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
+  
+        - name: Run Semgrep backend scan
+          run: |
+            python -m pip install semgrep
+            semgrep scan --config p/security-audit --error HRAgent_Main
+
+  secrets-scan:
+     name: Secrets Scan
+     runs-on: ubuntu-latest
+
+     steps:
+       - name: Checkout repository
+         uses: actions/checkout@v4
+         with:
+           fetch-depth: 0
+
+       - name: Scan repository for secrets
+         uses: gitleaks/gitleaks-action@v2
+  frontend-dependency-scan:
+      name: Frontend Dependency Scan
+      runs-on: ubuntu-latest
+
+      defaults:
+        run:
+          working-directory: chat_interface
+
+      steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
+
+        - name: Set up Node.js
+          uses: actions/setup-node@v4
+          with:
+            node-version: "22"
+            cache: "npm"
+            cache-dependency-path: chat_interface/package-lock.json
+
+        - name: Install dependencies
+          run: npm ci --legacy-peer-deps
+
+        - name: Audit frontend dependencies
+          run: npm audit --audit-level=high
+  cloud-configuration-scan:
+      name: Cloud / Terraform Configuration Scan
+      runs-on: ubuntu-latest
+  
+      steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
+  
+        - name: Scan Terraform configuration
+          uses: bridgecrewio/checkov-action@v12
+          with:
+            directory: terraform
+            framework: terraform

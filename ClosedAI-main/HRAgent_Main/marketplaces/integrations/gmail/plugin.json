@@ -1,0 +1,34 @@
+{
+  "name": "gmail",
+  "version": "1.0.0",
+  "description": "Gmail integration \u2014 read, search, send and manage email via official Google MCP server (https://gmailmcp.googleapis.com/mcp/v1, OAuth2). Named pilot integration for the MCP marketplace.",
+  "category": "Communication",
+  "authentication": "Google OAuth 2.0",
+  "tools": [
+    "create_draft",
+    "list_drafts",
+    "get_thread",
+    "get_message",
+    "search_threads",
+    "label_thread",
+    "unlabel_thread",
+    "apply_sensitive_thread_label",
+    "list_labels",
+    "label_message",
+    "unlabel_message",
+    "apply_sensitive_message_label",
+    "create_label"
+  ],
+  "mcp": true,
+  "setup": {
+    "auth": {
+      "method": "oauth2",
+      "label": "Connect with Google",
+      "hint": "Authorizes via Google's OAuth 2.0 flow using this deployment's registered Google app. No setup needed here -- just connect.",
+      "verify_tool_call": {
+        "name": "list_labels",
+        "arguments": {}
+      }
+    }
+  }
+}

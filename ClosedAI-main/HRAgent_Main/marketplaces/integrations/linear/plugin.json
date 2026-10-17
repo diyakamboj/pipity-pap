@@ -1,0 +1,21 @@
+{
+  "name": "linear",
+  "version": "1.0.0",
+  "description": "Linear integration — issues and projects via official Linear MCP server (https://mcp.linear.app/mcp, OAuth).",
+  "category": "Productivity",
+  "authentication": "OAuth 2.0",
+  "tools": [
+    "linear_create_issue",
+    "linear_get_issues",
+    "linear_get_issue",
+    "linear_update_issue",
+    "linear_search_issues"
+  ],
+  "mcp": true,
+  "setup": {
+    "auth": {
+      "method": "oauth2",
+      "label": "Connect with Linear"
+    }
+  }
+}

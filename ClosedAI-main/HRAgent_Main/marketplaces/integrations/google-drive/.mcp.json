@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "google-drive": {
+      "transport": "streamable-http",
+      "url": "https://drivemcp.googleapis.com/mcp/v1",
+      "auth": {
+        "strategy": "oauth2",
+        "authentication": {
+          "type": "oauth",
+          "provider": "google"
+        }
+      }
+    }
+  }
+}

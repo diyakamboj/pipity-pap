@@ -1,0 +1,34 @@
+{
+  "name": "github",
+  "version": "1.0.0",
+  "description": "GitHub integration via the official GitHub MCP server (https://api.githubcopilot.com/mcp/, OAuth 2.0). Search code/repos, read and manage issues and pull requests.",
+  "category": "Development",
+  "authentication": "OAuth 2.0 (GitHub App)",
+  "tools": [
+    "search_repositories",
+    "search_code",
+    "search_issues",
+    "get_file_contents",
+    "list_commits",
+    "get_issue",
+    "list_issues",
+    "create_issue",
+    "update_issue",
+    "get_pull_request",
+    "list_pull_requests"
+  ],
+  "mcp": true,
+  "setup": {
+    "auth": {
+      "method": "oauth2",
+      "label": "Connect with GitHub",
+      "hint": "Authorizes via GitHub's OAuth 2.0 flow using this deployment's registered GitHub App. No setup needed here -- just connect.",
+      "verify_tool_call": {
+        "name": "search_repositories",
+        "arguments": {
+          "query": "test"
+        }
+      }
+    }
+  }
+}

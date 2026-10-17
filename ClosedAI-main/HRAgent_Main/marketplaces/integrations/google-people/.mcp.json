@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "google-people": {
+      "transport": "streamable-http",
+      "url": "https://people.googleapis.com/mcp/v1",
+      "auth": {
+        "strategy": "oauth2",
+        "authentication": {
+          "type": "oauth",
+          "provider": "google"
+        }
+      }
+    }
+  }
+}

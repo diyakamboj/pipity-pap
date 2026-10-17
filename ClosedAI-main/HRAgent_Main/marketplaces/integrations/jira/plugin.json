@@ -1,0 +1,21 @@
+{
+  "name": "jira",
+  "version": "1.0.0",
+  "description": "Jira integration — teamwork graph context and objects via official Atlassian MCP server (https://mcp.atlassian.com/v1/mcp/authv2, OAuth/API token).",
+  "category": "Productivity",
+  "authentication": "OAuth 2.0 / API Token",
+  "tools": [
+    "getTeamworkGraphContext",
+    "getTeamworkGraphObject",
+    "addTeamworkGraphContext"
+  ],
+  "mcp": true,
+  "setup": {
+    "auth": {
+      "method": "oauth2",
+      "label": "Connect with Atlassian",
+      "hint": "Authorizes via the Atlassian-hosted OAuth endpoint (mcp.atlassian.com).",
+      "verify_tool_call": { "name": "getTeamworkGraphContext", "arguments": {} }
+    }
+  }
+}

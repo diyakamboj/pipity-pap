@@ -1,0 +1,27 @@
+{
+  "_comment": "Centralized backend-only OAuth configuration for every MCP integration -- client IDs, secrets, and the shared redirect URL. Copy this file to ~/.HRAgent/oauth_providers.json (or set OH_OAUTH_PROVIDERS_CONFIG_PATH to point elsewhere, e.g. a different file per dev/staging/prod environment) and fill in real values there -- never commit real credentials. See mcp_integration/oauth_provider_config.py for details.",
+
+  "redirect_uri": "http://localhost:8765/callback",
+  "_redirect_uri_comment": "Every provider app below must register this exact callback URL. Only the port is actually used (the callback is always a local loopback listener) -- change it here (and in each provider's app settings) if 8765 is already in use, or when deploying somewhere the port needs to differ.",
+
+  "providers": {
+    "google": {
+      "_comment": "Google Cloud Console -> APIs & Services -> Credentials -> Create Credentials -> OAuth client ID -> Application type: Desktop app. Add the redirect_uri above under Authorized redirect URIs. Used by gmail, google-drive, google-calendar, google-chat, google-people.",
+      "client_id": "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com",
+      "client_secret": "YOUR_GOOGLE_CLIENT_SECRET"
+    },
+
+    "slack": {
+      "_comment": "api.slack.com/apps -> Create New App -> OAuth & Permissions -> add the redirect_uri above as a Redirect URL, and enable MCP server access under the app's Assistant settings.",
+      "client_id": "YOUR_SLACK_CLIENT_ID",
+      "client_secret": "YOUR_SLACK_CLIENT_SECRET"
+    },
+
+    "github": {
+      "_comment": "github.com/settings/developers -> OAuth Apps -> New OAuth App. Set the Authorization callback URL to the redirect_uri above.",
+      "client_id": "YOUR_GITHUB_CLIENT_ID",
+      "client_secret": "YOUR_GITHUB_CLIENT_SECRET"
+    }
+  },
+  "_providers_comment": "Providers not listed here (Linear, Notion, Jira/Atlassian) support dynamic client registration and need no entry -- they're always ready to connect without any backend setup."
+}

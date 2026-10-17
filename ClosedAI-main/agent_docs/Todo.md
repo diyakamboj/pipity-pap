@@ -1,0 +1,103 @@
+## ⚠️ Read this first: rigorous re-test found a previously-undetected broken integration
+
+After this file previously reported Items 1-9 as fully done, the user pushed back: testing tools individually and reading final chat text isn't the same as verifying the actual UI experience. A rigorous, screenshot-driven re-test (production build, not just dev) of every integration found that **Azure AI Search was actually broken** despite being documented as working — it was never installed on this machine, and its declared tool names (`query`, `list_indexes`, `get_index`) never existed on the real MCP server at all. Both are now fixed and re-verified live. Also found two real chat UI bugs (one still unresolved) and fixed the Side Canvas never showing any marketplace-MCP tool output. Full detail: `docs/bug_fixes.md` #8-11, `docs/project_audit.md` section 2f.
+
+**Takeaway for future work in this repo: "an integration was tested and works" must mean tested through the live chat UI, on the actual tool names verified against the real MCP server's `tools/list`, with a fresh install on the machine being tested — not carried forward from an earlier session or assumed from the plugin's own config file.**
+
+## Status Summary (updated after completing Items 1-9; see docs/project_audit.md + docs/bug_fixes.md for full detail)
+
+- ✅ **Item 3 (MCP → Agent Runtime plumbing) — DONE.** `docs/project_audit.md` documents the fix: the backend was ignoring the marketplace's `mcp_config`. Fixed in `HRAgent_Main/runtime/server/conversation_service.py`, which now merges installed marketplace integrations into the inline agent config before execution. Verified through restart + live agent use.
+- ⚠️→✅ **Item 4 (Azure AI Search via Marketplace) — was NOT actually working despite being marked done; now genuinely fixed and re-verified.** The plugin existed at `HRAgent_Main/marketplaces/integrations/azure-ai-search/`, but a rigorous UI re-test found it wasn't installed on this machine and its declared tool names (`query`, `list_indexes`, `get_index`) never existed on the real MCP server. Both fixed (see `docs/bug_fixes.md` #8) and re-verified live: the agent now correctly calls `list-indexes` and gets the real index back. Also fixed a mismatched index name in `.env` (`hr-policies` → the real `company-policies`, see #9). A related startup-delay bug (bad `AZURE_SEARCH_ENDPOINT` causing a ~30s DNS timeout) was fixed earlier and is still fine.
+- ✅ **Items 1–2 (Skills library + end-to-end proof) — DONE.** Populated `~/.HRAgent/skills/` (user scope, loaded at every conversation start) and `HRAgent_Main/.HRAgent/skills/` (project scope) with dummy skills. Verified at the code level (`discover_profile_skills()`) and, critically, through the real chat UI: sending a message containing the trigger phrase produced the agent response `SKILLS_PLUMBING_OK: dummy skill loaded from ~/.HRAgent/skills/skills-smoke-test.md` — proving the full pipeline works with zero architecture changes. Along the way, found and fixed a real bug that silently zeroed out public/marketplace-repo skill loading (`skills/utils.py::update_skills_repository` returned a `bool` instead of a `Path`), and found and fixed a missing frontend LLM provider config (`chat_interface` had no `.env.local`, so it silently defaulted to an unconfigured TokenRouter provider and every chat hung). Also found, but deliberately did NOT fix, that the frontend's Skills *management* page (`chat_interface/lib/skills-store.tsx`) is disconnected mock data — real feature work, not a plumbing bug; see `docs/bug_fixes.md` #4 for the scope call to make before touching it.
+- ✅ Two stability bugs unrelated to the original scope were also fixed and are not blockers: a React 19 infinite re-render loop in `chat_interface/components/chat-conversation.tsx`, and a Unicode/emoji crash in `HRAgent_Main/runtime/server/event_service.py`. Also a Next.js hydration crash in `chat_interface/components/app-sidebar.tsx`.
+- ✅ **Item 5 (Cosmos DB via Marketplace) — DONE.** Plugin added at `HRAgent_Main/marketplaces/integrations/cosmos-db/`, vendoring the official Azure Cosmos DB team's MCP sample (`AzureCosmosDB/azure-cosmos-mcp-server-samples`, MIT). Chose this over Microsoft's more broadly-official `@azure/mcp` because that one only supports Entra ID auth, not the account-key credentials already provisioned. Confirmed working end-to-end through the actual chat UI: asked for the employee count and one employee's role, got back the exact right numbers (517 documents, "VP of Engineering") sourced live from Cosmos. Along the way, discovered the Cosmos database is **already fully seeded** with 19 containers covering the whole HR domain (see Item 6 below) — this significantly changes what's realistic for the document-retrieval and HR-library items. Also found and fixed a real bug in how installed marketplace plugins locate this repo's Python venv (see `docs/bug_fixes.md` #6).
+- ✅ **Item 6 (document retrieval architecture) — RESOLVED.** The Cosmos `documents` container turned out to hold only metadata (`blobUrl: blob://<container>/<name>`) — the real files live in a separate, already-provisioned Azure Storage account, `closedaidevstg` (same `Closed_AI` resource group; found via `az resource list` after the user corrected an earlier wrong assumption I'd made). Three blob containers: `onboarding-forms` (the real fillable forms — I-9, NDA, code of conduct, emergency contact, plus 2 policy PDFs), `generated-reports` (mostly plain-text reports), `policy-documents` (one file). So the architecture is: Cosmos = structured HR data + document *metadata*; Azure Blob Storage (`closedaidevstg`) = the actual files; Azure AI Search = separately indexes `hr-policies` for search. This was user-corrected mid-session — my first pass only checked Cosmos and concluded there was no real document store; the user knew the real architecture and pointed me at Azure CLI to find it.
+- ✅ **Items 7–8 (document-editing MCP + real-document testing) — DONE.** Selected `office-oxide-mcp` (`Aimino-Tech/opendocswork-mcp`, 157★, GPL-3.0 — user confirmed this choice after being told about the license) after evaluating it against `formfill-mcp`, `pdfnative-mcp`, `docx-mcp`, and `document-edit-mcp`; no major-vendor-official option exists in this space (unlike Cosmos DB/Azure AI Search). Not registry-published — built from source via `cargo install --git ...` (installed Rust/cargo via rustup first). Integrated at `HRAgent_Main/marketplaces/integrations/document-editor/`, registered in `marketplaces/default.json`, installed via `/api/plugins/install`. Tested against the **real** documents downloaded from `closedaidevstg`: successfully filled the I-9's 133 real AcroForm fields (`office_validate` 6/6 passed, rest of document unchanged), successfully overlaid text on the flat NDA PDF (verified byte-identical elsewhere via `pypdf`), and — importantly — found and documented two genuine limitations rather than glossing over them: (1) `office_analyze_pdf_layout` garbles text extraction on the NDA specifically (font-encoding edge case), and (2) neither `.docx` form has `{placeholder}`-style fields, so this MCP's template-fill tool doesn't apply to them (they use table cells instead) — DOCX form-filling remains an open gap. See `docs/project_audit.md` section "Document Retrieval Architecture ... and Document-Editing MCP" for full detail.
+- ⚠️ **Item 9 (full end-to-end proof for every capability) — mostly done, with two known-open chat UI bugs.** Azure AI Search, Skills, Cosmos DB, and document editing (the I-9 fill specifically) are all now proven through the actual chat UI via a rigorous, screenshot-driven re-test (production build, not just dev) — see `docs/project_audit.md` section 2f. That same re-test found and fixed the Side Canvas never showing any marketplace-MCP tool output (see `docs/bug_fixes.md` #11), and found — but did NOT fix — two real chat UI bugs: a recurring, self-recovering "Maximum update depth exceeded" React error, and Side Canvas/Activity panels not resetting on New Chat (`docs/bug_fixes.md` #10). The document-editing test also surfaced a real, worth-knowing quirk: the agent's first attempt guessed a sandbox-style `/workspace/...` path instead of the real host filesystem path — this environment runs outside the containerized sandbox the agent runtime assumes, so path instructions baked into its behavior don't always hold locally. Had to supply the absolute host path directly.
+- 🟡 **Item 10 (HR automation library) — STARTED, user-authorized.** Per the original instruction to build one well-tested skill rather than the whole library at once, built and tested `hr-onboarding.md` (installed at `~/.HRAgent/skills/`). Live-chat tested with natural-language phrasing (no explicit tool names) — the skill's keyword trigger fired correctly, and the agent honestly reported what it could and couldn't do for a real employee (found the name; correctly found no onboarding-checklist match — a genuine seed-data linkage gap, not a bug; correctly declined to fill a PDF it couldn't confirm belonged to that employee) rather than fabricating. See `docs/project_audit.md` section "First Real HR Skill — Onboarding" for full detail, including a real behavioral finding (the agent sometimes ends its turn on a mid-task planning remark instead of a final summary on longer tool chains — needed an explicit nudge to finalize). **Only one skill exists so far** — do not build the rest of the library (payroll/benefits/leave/compliance/etc.) without a further explicit go-ahead, consistent with the original "do not immediately build all of them" instruction.
+
+### Items 1–2 (Skills) — resolved, kept for reference
+
+- Skills implementation lives in `HRAgent_Main/skills/` (`skill.py`, `installed.py`, `utils.py`, `trigger.py`, `fetch.py`, `execute.py`, `types.py`) plus server glue in `HRAgent_Main/runtime/server/skills_service.py` and `skills_router.py`. It supports two formats: HRAgents-native `skills/*.md` files and AgentSkills-standard `skills/<name>/SKILL.md` directories.
+- **The actual conversation-start catalog only pulls public + user skills**, not project skills (`discover_profile_skills()` in `skills_service.py` calls `load_all_skills(load_project=False)`). Project skills are loaded lazily elsewhere and need workspace context. So for anything that must be available in a live chat, `~/.HRAgent/skills/` (user scope) is the reliable target, not project scope.
+- Dummy skills now exist at `~/.HRAgent/skills/skills-smoke-test.md`, `~/.HRAgent/skills/dummy-context-note.md`, and `HRAgent_Main/.HRAgent/skills/hr-project-smoke-test/SKILL.md`. Keep or delete these — they're inert (harmless dummy content) but should probably be removed once the real HR skills library replaces them (Item 10).
+- Frontend's `/api/skills` proxy route (`chat_interface/app/api/skills/[...path]/route.ts`) works correctly and forwards to the backend, but the Skills *management page* (`chat_interface/lib/skills-store.tsx`) doesn't call it — see `docs/bug_fixes.md` #4. Does not block skills working in chat.
+
+### Findings that will save time on Items 5–8 (Cosmos DB / document editing)
+
+- `HRAgent_Main/marketplaces/integrations/` currently has: `github`, `gmail`, `google-people`, `google-chat`, `notion`, `google-calendar`, `postgres`, `azure-ai-search`, `jira`, `google-drive`, `slack`, `microsoft-365`. Use `postgres/` or `azure-ai-search/` as the structural template (`plugin.json` + `.mcp.json` + `README.md`) for both the Cosmos DB and document-editing integrations.
+- `hr_mcp/server.py` is a separate, existing, **read-only** mock HR data MCP server (employees + policies from `hr_mcp/seed_data.py`), launched directly by the backend (not through the marketplace). Its docstring already anticipates a Cosmos/Azure backend swap via `HR_MCP_DATA_BACKEND=azure`, but that backend is currently stubbed/unimplemented. Decide whether Cosmos DB should replace/extend this mock backend or be a fully separate marketplace MCP — don't assume, per Item 5/6 instructions.
+
+---
+
+## Remaining Work (original priorities, unchanged — only re-ordered by what's actually left)
+
+## **1. Finish the existing Skills implementation**
+
+**Already done.** No architecture changes were needed — the implementation was already correctly wired. Dummy skills now live at `~/.HRAgent/skills/` (user scope, loaded at every conversation start) and `HRAgent_Main/.HRAgent/skills/` (project scope). One real bug found and fixed along the way: public/marketplace-repo skill loading silently returned 0 skills due to a type bug in `skills/utils.py::update_skills_repository` (see `docs/bug_fixes.md` #3). See `docs/project_audit.md` section "Skills Library + End-to-End Proof" for full detail.
+
+---
+
+## **2. Prove the Skills pipeline works end-to-end**
+
+**Already done.** Verified backend-level (`discover_profile_skills()` includes the dummy skills) and, critically, through the real chat UI: a message containing the trigger phrase produced the agent response `SKILLS_PLUMBING_OK: dummy skill loaded from ~/.HRAgent/skills/skills-smoke-test.md`. Backend logs independently confirmed `Skill 'skills-smoke-test' triggered by keyword 'skills-smoke-test'`. See `docs/project_audit.md`.
+
+A second, unrelated wiring gap was found and fixed while testing this: `chat_interface` had no `.env.local`, so it silently defaulted to an unconfigured LLM provider and every chat hung indefinitely (see `docs/bug_fixes.md` #5).
+
+---
+
+## **3. MCP → Agent Runtime plumbing**
+
+**Already done.** See `docs/project_audit.md` — fixed in `HRAgent_Main/runtime/server/conversation_service.py`. No further action unless new regressions appear.
+
+---
+
+## **4. Azure AI Search via the Marketplace**
+
+**Already done.** See `HRAgent_Main/marketplaces/integrations/azure-ai-search/` and `docs/bug_fixes.md`/`docs/project_audit.md`. No further action unless new regressions appear.
+
+---
+
+## **5. Add Cosmos DB through the existing MCP Marketplace**
+
+**Already done.** Integrated the official Azure Cosmos DB team's MCP sample at `HRAgent_Main/marketplaces/integrations/cosmos-db/`, registered in `marketplaces/default.json`, installed via the real `/api/plugins/install` endpoint, and proven end-to-end through the actual chat UI (517-document count and Joseph Johnson's role, both matching live data). See `docs/project_audit.md` section "Cosmos DB via the Existing MCP Marketplace" and `docs/bug_fixes.md` #6 for the one bug fixed along the way. No further action unless new regressions appear.
+
+**Important discovery for Items 6-8 below:** the live Cosmos database (`closedai-db`) is already fully seeded with 19 containers covering essentially the entire HR domain: `employees` (517 docs), `applicants`, `documents`, `document_templates`, `onboarding_checklists`, `payroll_cases`, `benefits_plans`, `benefits_elections`, `benefits_catalog`, `leave_requests`, `policies`, `compensation_bands`, `assets`, `asset_policies`, `jobs`, `schedules`, `hr_tickets`, `reports`, `integrations`. This was not previously known and changes what's realistic — the `documents`/`document_templates` containers in particular are directly relevant to Item 6 and haven't been inspected in detail yet.
+
+---
+
+## **6. Determine the correct document retrieval architecture**
+
+**Resolved.** The real architecture (confirmed live, not guessed): **Cosmos DB** (`closedai-db`) holds structured HR data (employees, benefits, payroll, leave, policies text, etc.) plus document *metadata* (the `documents` container — type, employeeId, verified status, a `blobUrl` pointer); the actual document *files* live in a separate, already-provisioned **Azure Storage account** (`closedaidevstg`, same `Closed_AI` resource group), containers `onboarding-forms` (real fillable I-9/NDA/code-of-conduct/emergency-contact forms + 2 policy PDFs), `generated-reports`, `policy-documents`; **Azure AI Search** separately indexes `hr-policies` for search. All three pieces are real, live, and already provisioned — nothing here needed to be invented. Found via `az resource list --resource-group Closed_AI` after the user corrected an initial wrong read (a first pass that only checked Cosmos wrongly concluded no real document store existed).
+
+No blob-storage MCP exists yet in the marketplace — getting a specific blob onto local disk for the document-editor MCP to operate on (and writing results back) is a manual/scripted step for now, not automated. Worth revisiting if/when this becomes a frequent real workflow rather than a one-off test.
+
+---
+
+## **7. Find an existing document-editing MCP**
+
+**Done.** Selected `office-oxide-mcp` (`Aimino-Tech/opendocswork-mcp` on GitHub, 157★, GPL-3.0) after evaluating `formfill-mcp` (2★), `pdfnative-mcp` (2★), `docx-mcp` (42★), and `document-edit-mcp` (52★, no AcroForm support) — it was the only one covering real AcroForm fill + flat-PDF text overlay + Office format reading in a single tool, and had the most stars. No major-vendor-official option exists in this space, unlike Cosmos DB/Azure AI Search — flagged the GPL license to the user, who confirmed proceeding (run as an external subprocess, not linked into this repo's code). Not registry-published; requires `cargo install --git https://github.com/Aimino-Tech/opendocswork-mcp` as a one-time setup step (documented in the plugin's README). Integrated at `HRAgent_Main/marketplaces/integrations/document-editor/` through the same marketplace structure as every other integration.
+
+---
+
+## **8. Test the document MCP with real documents**
+
+**Done**, against real files pulled from `closedaidevstg` (not synthetic test docs): `office_fill_pdf_form` correctly filled 133-field AcroForm on the real I-9 (`office_validate` 6/6 passed, rest of the 4-page document unchanged); `office_overlay_pdf_text` correctly inserted extractable text on the flat NDA PDF (verified byte-identical elsewhere via independent `pypdf` check). Two genuine limitations found and documented rather than hidden — see `HRAgent_Main/marketplaces/integrations/document-editor/README.md`: `office_analyze_pdf_layout` garbles text on this specific NDA file (font-encoding edge case), and neither of the two `.docx` forms have `{placeholder}`-style fields, so DOCX template-filling doesn't apply to them (they use table cells) — that specific capability remains an open gap.
+
+---
+
+## **9. Everything must work through the actual agent**
+
+**Done for every capability built so far.** Azure AI Search, Skills, Cosmos DB, and the document-editor's I-9 fill were each independently proven through the real chat UI (not just backend/MCP-standalone tests) — see `docs/project_audit.md` for each. One real, worth-remembering hiccup from the document-editor test: the agent's first attempt guessed a sandbox-style `/workspace/...` absolute path instead of this machine's real filesystem path, since this environment runs outside the containerized sandbox the agent runtime was originally built for — had to supply the real host path directly. Keep this in mind for any future local (non-sandboxed) testing.
+
+---
+
+## **10. HR automation library — started (one skill), user-authorized**
+
+**Started, not complete.** Built `hr-onboarding.md` (at `~/.HRAgent/skills/`) as the first real HR skill, per the original instruction to prove one skill works end-to-end before building the whole library. Tested through the live chat UI with natural language (not an exact keyword) and confirmed the skill both triggers correctly and — more importantly — behaves honestly under real, imperfect data: it reported what it found and plainly said what it couldn't confirm, rather than fabricating a completed onboarding. Full detail in `docs/project_audit.md`.
+
+**Do not build the rest of the library (payroll, benefits, leave, compliance, etc.) without a further explicit go-ahead** — only onboarding exists so far, and even that only covers what's realistically achievable with the tools actually connected (no blob-storage fetch, no DOCX table-cell filling).
+
+**New finding to fix or account for before building more skills:** the `onboarding_checklists` Cosmos container isn't actually linked to the `employees` container by ID (see `docs/bug_fixes.md` #7) — any real onboarding skill needs this resolved (or needs to be written to gracefully handle the mismatch, which `hr-onboarding.md` already does) before it can reliably chain "look up employee → find their checklist."
+
+**Repair existing plumbing. Add missing library contents. Add external MCP capabilities through the marketplace. Do not replace the architecture.** — this held true throughout: no existing architecture was changed, only populated and connected.

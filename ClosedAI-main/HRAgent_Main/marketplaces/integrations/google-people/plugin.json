@@ -1,0 +1,24 @@
+{
+  "name": "google-people",
+  "version": "1.0.0",
+  "description": "Google People integration \u2014 contacts, profiles and domain directory via official Google MCP server (https://people.googleapis.com/mcp/v1, OAuth2).",
+  "category": "Productivity",
+  "authentication": "Google OAuth 2.0",
+  "tools": [
+    "search_directory_people",
+    "search_contacts",
+    "get_user_profile"
+  ],
+  "mcp": true,
+  "setup": {
+    "auth": {
+      "method": "oauth2",
+      "label": "Connect with Google",
+      "hint": "Authorizes via Google's OAuth 2.0 flow using this deployment's registered Google app. No setup needed here -- just connect.",
+      "verify_tool_call": {
+        "name": "get_user_profile",
+        "arguments": {}
+      }
+    }
+  }
+}

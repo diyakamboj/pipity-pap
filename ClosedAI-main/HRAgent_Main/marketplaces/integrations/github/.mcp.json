@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "github": {
+      "transport": "streamable-http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "auth": {
+        "strategy": "oauth2",
+        "authentication": {
+          "type": "oauth",
+          "provider": "github"
+        }
+      }
+    }
+  }
+}

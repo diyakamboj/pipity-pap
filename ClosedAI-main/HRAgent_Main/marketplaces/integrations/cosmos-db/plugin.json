@@ -1,0 +1,57 @@
+{
+  "name": "cosmos-db",
+  "version": "1.0.0",
+  "description": "Azure Cosmos DB integration — query, schema discovery, and document exploration via the official Azure Cosmos DB team's MCP server sample (AzureCosmosDB/azure-cosmos-mcp-server-samples).",
+  "category": "Databases",
+  "authentication": "COSMOS_KEY",
+  "tools": [
+    "query_cosmos",
+    "list_collections",
+    "describe_container",
+    "find_implied_links",
+    "get_sample_documents",
+    "count_documents",
+    "get_partition_key_info",
+    "get_indexing_policy",
+    "list_distinct_values"
+  ],
+  "mcp": true,
+  "setup": {
+    "auth": {
+      "method": "env",
+      "label": "Cosmos DB Access Key",
+      "hint": "Account key from the Cosmos DB resource's Keys blade. Read/write scope follows the key you provide -- use a read-only key if available."
+    },
+    "fields": [
+      {
+        "name": "COSMOS_URI",
+        "label": "Cosmos DB Account URI",
+        "type": "text",
+        "required": true,
+        "placeholder": "https://<your-account>.documents.azure.com:443/"
+      },
+      {
+        "name": "COSMOS_KEY",
+        "label": "Cosmos DB Account Key",
+        "type": "password",
+        "secret": true,
+        "required": true,
+        "placeholder": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      {
+        "name": "COSMOS_DATABASE",
+        "label": "Database Name",
+        "type": "text",
+        "required": true,
+        "placeholder": "closedai-db"
+      },
+      {
+        "name": "COSMOS_CONTAINER",
+        "label": "Default Container Name",
+        "type": "text",
+        "required": true,
+        "placeholder": "employees"
+      }
+    ]
+  }
+}

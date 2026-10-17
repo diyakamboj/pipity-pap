@@ -1,0 +1,501 @@
+# Repository Breakdown
+
+This file captures the current repository structure after the package-root reorganization.
+
+## Summary
+- Total directories: 81
+- Total files: 372
+
+## Top-level structure
+
+```text
+.git/
+.HRAgent/
+.pr/
+configuration/
+context/
+core/
+mcp/
+memory/
+models/
+plugins/
+runtime/
+security/
+skills/
+subagents/
+tools/
+utilities/
+.dockerignore
+.gitignore
+.pre-commit-config.yaml
+.python-version
+AGENTS.md
+CONTRIBUTING.md
+DEVELOPMENT.md
+LICENSE
+MAINTAINERS
+Makefile
+MANIFEST.in
+pyproject.toml
+README.md
+reorganization_migration_map.md
+repository_breakdown.md
+uv.lock
+```
+
+## Full repository tree
+
+```text
+.git/
+  hooks/
+    applypatch-msg.sample
+    commit-msg.sample
+    fsmonitor-watchman.sample
+    post-update.sample
+    pre-applypatch.sample
+    pre-commit.sample
+    pre-merge-commit.sample
+    pre-push.sample
+    pre-rebase.sample
+    pre-receive.sample
+    prepare-commit-msg.sample
+    push-to-checkout.sample
+    sendemail-validate.sample
+    update.sample
+  info/
+    exclude
+  logs/
+    refs/
+      heads/
+        main
+      remotes/
+        origin/
+          HEAD
+    HEAD
+  objects/
+    info/
+    pack/
+      pack-f5cc4c28aaf8d324ab1e56ba7c22dd2d3e0d994d.idx
+      pack-f5cc4c28aaf8d324ab1e56ba7c22dd2d3e0d994d.pack
+      pack-f5cc4c28aaf8d324ab1e56ba7c22dd2d3e0d994d.rev
+  refs/
+    heads/
+      main
+    remotes/
+      origin/
+        HEAD
+    tags/
+  config
+  description
+  HEAD
+  index
+  packed-refs
+.HRAgent/
+  hooks/
+    on_stop.sh
+  hooks.json
+  setup.sh
+.pr/
+  cleanup_inventory.md
+configuration/
+  package_metadata/
+    agent-core-pyproject.toml
+    agent-runtime-AGENTS.md
+    agent-runtime-pyproject.toml
+    agent-tools-pyproject.toml
+  profiles/
+    __init__.py
+    agent_profile.py
+    agent_profile_store.py
+    profile_refs.py
+    resolver.py
+    seed.py
+  settings/
+    __init__.py
+    acp_providers.py
+    api_models.py
+    metadata.py
+    model.py
+context/
+  condenser/
+    prompts/
+      summarizing_prompt.j2
+    __init__.py
+    base.py
+    llm_summarizing_condenser.py
+    no_op_condenser.py
+    pipeline_condenser.py
+    README.md
+    utils.py
+  prompts/
+    sections/
+      __init__.py
+      dynamic.py
+      planning.py
+      static.py
+    templates/
+      ask_agent_template.j2
+      skill_knowledge_info.j2
+    __init__.py
+    presets.py
+    prompt.py
+    registry.py
+    section.py
+  view/
+    properties/
+      __init__.py
+      base.py
+      batch_atomicity.py
+      observation_uniqueness.py
+      tool_call_matching.py
+      tool_loop_atomicity.py
+    __init__.py
+    manipulation_indices.py
+    view.py
+  __init__.py
+  agent_context.py
+  README.md
+core/
+  agent/
+    __init__.py
+    acp_agent.py
+    acp_file_credentials.py
+    acp_models.py
+    agent.py
+    base.py
+    credential.py
+    critic_mixin.py
+    parallel_executor.py
+    response_dispatch.py
+    utils.py
+  conversation/
+    impl/
+      __init__.py
+      local_conversation.py
+      remote_conversation.py
+    visualizer/
+      __init__.py
+      base.py
+      default.py
+    __init__.py
+    base.py
+    cancellation.py
+    conversation.py
+    conversation_stats.py
+    event_store.py
+    events_list_base.py
+    exceptions.py
+    fifo_lock.py
+    persistence_const.py
+    request.py
+    resource_lock_manager.py
+    response_utils.py
+    secret_registry.py
+    state.py
+    stuck_detector.py
+    title_utils.py
+    types.py
+  execution/
+    event/
+      llm_convertible/
+        __init__.py
+        action.py
+        message.py
+        observation.py
+        reasoning_utils.py
+        system.py
+      __init__.py
+      acp_tool_call.py
+      base.py
+      condenser.py
+      conversation_error.py
+      conversation_state.py
+      hook_execution.py
+      llm_completion_log.py
+      resume_transcript.py
+      streaming_delta.py
+      token.py
+      types.py
+      user_action.py
+    hooks/
+      __init__.py
+      config.py
+      conversation_hooks.py
+      executor.py
+      manager.py
+      types.py
+  orchestration/
+    goal/
+      __init__.py
+      controller.py
+      judge.py
+      prompts.py
+      runner.py
+  __init__.py
+  banner.py
+mcp/
+  __init__.py
+  client.py
+  config.py
+  definition.py
+  exceptions.py
+  tool.py
+  utils.py
+memory/
+  memory.py
+models/
+  llm/
+    auth/
+      __init__.py
+      credentials.py
+      openai.py
+    exceptions/
+      __init__.py
+      classifier.py
+      mapping.py
+      types.py
+    mixins/
+      fn_call_converter.py
+      fn_call_examples.py
+      non_native_fc.py
+    options/
+      __init__.py
+      chat_options.py
+      common.py
+      responses_options.py
+    router/
+      impl/
+        multimodal.py
+        random.py
+      __init__.py
+      base.py
+    utils/
+      HRAgent_provider.py
+      image_inline.py
+      image_resize.py
+      litellm_provider.py
+      metrics.py
+      model_features.py
+      model_info.py
+      model_prompt_spec.py
+      responses_serialization.py
+      retry_mixin.py
+      telemetry.py
+      unverified_models.py
+      verified_models.py
+      vertex_preflight.py
+    __init__.py
+    fallback_strategy.py
+    llm.py
+    llm_profile_store.py
+    llm_registry.py
+    llm_response.py
+    message.py
+    streaming.py
+plugins/
+  __init__.py
+  discovery.py
+  fetch.py
+  installed.py
+  loader.py
+  plugin.py
+  source.py
+  types.py
+runtime/
+  integrations/
+    openai/
+      __init__.py
+      models.py
+      README.md
+      router.py
+      service.py
+    vscode_extensions/
+      HRAgent-settings/
+        extension.js
+        package.json
+  persistence/
+    __init__.py
+    models.py
+    store.py
+  server/
+    __init__.py
+    __main__.py
+    _secret_redaction.py
+    _secrets_exposure.py
+    agent-server.spec
+    agent_profiles_router.py
+    api.py
+    auth_router.py
+    config.py
+    conversation_lease.py
+    conversation_router.py
+    conversation_service.py
+    credential_binding.py
+    dependencies.py
+    env_parser.py
+    event_router.py
+    event_service.py
+    hooks_router.py
+    hooks_service.py
+    init_router.py
+    llm_router.py
+    logging_config.py
+    mcp_oauth_store.py
+    mcp_router.py
+    middleware.py
+    models.py
+    openapi.py
+    plugins_router.py
+    plugins_service.py
+    profiles_router.py
+    pub_sub.py
+    py.typed
+    README.md
+    server_details_router.py
+    settings_router.py
+    skills_router.py
+    skills_service.py
+    sockets.py
+    sub_agents_router.py
+    tool_preload_service.py
+    tool_router.py
+    utils.py
+    workspace_router.py
+    workspaces_router.py
+  telemetry/
+    logger/
+      __init__.py
+      logger.py
+      rolling.py
+    observability/
+      __init__.py
+      laminar.py
+      utils.py
+    __init__.py
+    factory.py
+    http_exporter.py
+    models.py
+    policy.py
+    posthog_exporter.py
+    sanitizer.py
+    service.py
+    sink.py
+    subscriber.py
+security/
+  policies/
+    defense_in_depth/
+      __init__.py
+      pattern.py
+      policy_rails.py
+      utils.py
+    grayswan/
+      __init__.py
+      analyzer.py
+      utils.py
+    __init__.py
+    _shell_ast.py
+    analyzer.py
+    confirmation_policy.py
+    ensemble.py
+    llm_analyzer.py
+    risk.py
+    shell_parser.py
+    toolshield_helpers.py
+    toolshield_llm_analyzer.py
+  validation/
+    secret/
+      __init__.py
+      secrets.py
+skills/
+  __init__.py
+  exceptions.py
+  execute.py
+  fetch.py
+  installed.py
+  skill.py
+  trigger.py
+  types.py
+  utils.py
+subagents/
+  __init__.py
+  AGENTS.md
+  load.py
+  registry.py
+  schema.py
+tools/
+  builtins/
+    __init__.py
+    finish.py
+    invoke_skill.py
+    switch_llm.py
+    think.py
+    vision_inspect.py
+  delegate/
+    __init__.py
+    definition.py
+    impl.py
+    visualizer.py
+  preset/
+    subagents/
+      bash_runner.md
+      code_explorer.md
+      default.md
+      web_researcher.md
+    __init__.py
+    default.py
+    gemini.py
+    gpt5.py
+    planning.py
+  utils/
+    __init__.py
+    timeout.py
+  __init__.py
+  AGENTS.md
+  client_tool.py
+  defaults.py
+  py.typed
+  registry.py
+  schema.py
+  spec.py
+  tool.py
+utilities/
+  io/
+    __init__.py
+    base.py
+    cache.py
+    local.py
+    memory.py
+  __init__.py
+  async_executor.py
+  async_utils.py
+  cipher.py
+  command.py
+  datetime.py
+  deprecation.py
+  files.py
+  HRAgent_init.py
+  json.py
+  models.py
+  paging.py
+  path.py
+  pydantic_secrets.py
+  redact.py
+  truncate.py
+  visualize.py
+.dockerignore
+.gitignore
+.pre-commit-config.yaml
+.python-version
+AGENTS.md
+CONTRIBUTING.md
+DEVELOPMENT.md
+LICENSE
+MAINTAINERS
+Makefile
+MANIFEST.in
+pyproject.toml
+README.md
+reorganization_migration_map.md
+repository_breakdown.md
+uv.lock
+```

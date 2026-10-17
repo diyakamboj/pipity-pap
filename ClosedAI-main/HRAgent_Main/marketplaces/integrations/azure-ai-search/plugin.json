@@ -1,0 +1,54 @@
+{
+  "name": "azure-ai-search",
+  "version": "1.0.0",
+  "description": "Azure AI Search integration — semantic, hybrid, and text search queries across your enterprise data via MCP.",
+  "category": "Search",
+  "authentication": "AZURE_SEARCH_API_KEY",
+  "tools": [
+    "search-documents",
+    "get-document",
+    "suggest",
+    "autocomplete",
+    "list-indexes",
+    "get-index-schema",
+    "get-index-statistics",
+    "vector-search",
+    "hybrid-search",
+    "semantic-search",
+    "upload-documents",
+    "merge-documents",
+    "delete-documents"
+  ],
+  "mcp": true,
+  "setup": {
+    "auth": {
+      "method": "env",
+      "label": "Azure API Key",
+      "hint": "Read-only Query Key is recommended."
+    },
+    "fields": [
+      {
+        "name": "AZURE_SEARCH_ENDPOINT",
+        "label": "Azure Search Endpoint",
+        "type": "text",
+        "required": true,
+        "placeholder": "https://<your-service>.search.windows.net"
+      },
+      {
+        "name": "AZURE_SEARCH_INDEX",
+        "label": "Azure Search Index Name",
+        "type": "text",
+        "required": true,
+        "placeholder": "my-index"
+      },
+      {
+        "name": "AZURE_SEARCH_API_KEY",
+        "label": "Azure Search API Key",
+        "type": "password",
+        "secret": true,
+        "required": true,
+        "placeholder": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      }
+    ]
+  }
+}

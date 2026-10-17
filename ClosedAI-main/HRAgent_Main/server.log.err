@@ -1,0 +1,107 @@
+[08/06/26 01:10:48] WARNING  Current configuration will not       config.py:285
+                             reload as not all conditions are                  
+                             met, please refer to documentation.               
++----------------------------------------------------------------------+
+|  HRAgents SDK v0.0.0                                                |
+|                                                                      |
+|  Report a bug: github.com/HRAgents/software-agent-sdk/issues        |
+|  Get help: HRAgent.dev/joinslack                                   |
+|  Scale up: HRAgent.dev/product/sdk                                 |
+|                                                                      |
+|  Set HRAgentS_SUPPRESS_BANNER=1 to hide this message                |
++----------------------------------------------------------------------+
+
+[08/06/26 01:10:51] WARNING  ⚠️ OH_SECRET_KEY was not defined.    config.py:380
+                             Secrets will not be persisted                     
+                             between restarts.                                 
+[08/06/26 01:10:51] WARNING  ⚠️ OH_SECRET_KEY was not defined.    config.py:380
+                             Secrets will not be persisted                     
+                             between restarts.                                 
+[08/06/26 01:10:51] WARNING  Saving MCP OAuth state      mcp_oauth_store.py:352
+                             without encryption (no                            
+                             OH_SECRET_KEY configured).                        
+                             Configure OH_SECRET_KEY for                       
+                             production deployments.                           
+[08/06/26 01:10:51] WARNING  ⚠️ OH_SECRET_KEY was not defined.    config.py:380
+                             Secrets will not be persisted                     
+                             between restarts.                                 
+[08/06/26 01:10:51] WARNING  Storing secrets without encryption on store.py:458
+                             Windows. File permissions are not                 
+                             enforced. Configure OH_SECRET_KEY for             
+                             secure storage.                                   
+[08/06/26 01:10:51] INFO     Registered file-based agent         default.py:134
+                             'bash-runner' from                                
+                             C:/Users/UdayK/AI-HR-Copilot/HRAgen               
+                             t_Main/tools/preset/subagents/bash_               
+                             runner.md                                         
+[08/06/26 01:10:51] INFO     Registered file-based agent         default.py:134
+                             'code-explorer' from                              
+                             C:/Users/UdayK/AI-HR-Copilot/HRAgen               
+                             t_Main/tools/preset/subagents/code_               
+                             explorer.md                                       
+[08/06/26 01:10:51] INFO     Registered file-based agent         default.py:134
+                             'general-purpose' from                            
+                             C:/Users/UdayK/AI-HR-Copilot/HRAgen               
+                             t_Main/tools/preset/subagents/defau               
+                             lt.md                                             
+[08/06/26 01:10:51] INFO     Registered file-based agent         default.py:134
+                             'web-researcher' from                             
+                             C:/Users/UdayK/AI-HR-Copilot/HRAgen               
+                             t_Main/tools/preset/subagents/web_r               
+                             esearcher.md                                      
+[08/06/26 01:10:51] INFO     Started server process [22884]        server.py:84
+[08/06/26 01:10:51] INFO     Waiting for application startup.          on.py:48
+[08/06/26 01:10:51] INFO     VSCode service is disabled              api.py:135
+[08/06/26 01:10:51] INFO     Desktop service is disabled             api.py:147
+[08/06/26 01:10:51] INFO     Tool preload service started            api.py:153
+                             successfully                                      
+[08/06/26 01:10:51] INFO     Server initialization complete - ready  api.py:221
+                             to serve requests                                 
+[08/06/26 01:10:51] INFO     Application startup complete.             on.py:62
+[08/06/26 01:10:51] INFO     Uvicorn running on                   server.py:216
+                             http://127.0.0.1:8001 (Press CTRL+C               
+                             to quit)                                          
+[08/06/26 01:11:01] INFO     Loaded MCP config from               plugin.py:488
+                             C:\Users\UdayK\.HRAgent\plugins\inst              
+                             alled\github\.mcp.json with 1                     
+                             server(s)                                         
+[08/06/26 01:11:01] INFO     127.0.0.1:62330 - "GET             h11_impl.py:473
+                             /api/plugins/installed HTTP/1.1"                  
+                             200                                               
+[08/06/26 01:11:01] INFO     Loaded MCP config from               plugin.py:488
+                             C:\Users\UdayK\AI-HR-Copilot\HRAgent              
+                             _Main\marketplaces\integrations\gith              
+                             ub\.mcp.json with 1 server(s)                     
+[08/06/26 01:11:01] INFO     HTTPException 409 on POST               api.py:585
+                             /api/plugins/install: Plugin already              
+                             installed. Use force=true to overwrite.           
+[08/06/26 01:11:01] INFO     127.0.0.1:62331 - "POST            h11_impl.py:473
+                             /api/plugins/install HTTP/1.1" 409                
+[08/06/26 01:11:01] INFO     Loaded MCP config from               plugin.py:488
+                             C:\Users\UdayK\AI-HR-Copilot\HRAgent              
+                             _Main\marketplaces\integrations\gith              
+                             ub\.mcp.json with 1 server(s)                     
+[08/06/26 01:11:01] INFO     Loaded MCP config from               plugin.py:488
+                             C:\Users\UdayK\.HRAgent\plugins\inst              
+                             alled\github\.mcp.json with 1                     
+                             server(s)                                         
+[08/06/26 01:11:01] INFO     127.0.0.1:62332 - "POST            h11_impl.py:473
+                             /api/plugins/install HTTP/1.1" 200                
+[08/06/26 01:11:01] INFO     Loaded MCP config from               plugin.py:488
+                             C:\Users\UdayK\.HRAgent\plugins\inst              
+                             alled\github\.mcp.json with 1                     
+                             server(s)                                         
+[08/06/26 01:11:01] INFO     127.0.0.1:62333 - "GET             h11_impl.py:473
+                             /api/plugins/installed HTTP/1.1"                  
+                             200                                               
+[08/06/26 01:11:01] INFO     Loaded MCP config from               plugin.py:488
+                             C:\Users\UdayK\.HRAgent\plugins\inst              
+                             alled\github\.mcp.json with 1                     
+                             server(s)                                         
+[08/06/26 01:11:01] INFO     127.0.0.1:62335 - "GET             h11_impl.py:473
+                             /api/plugins/installed HTTP/1.1"                  
+                             200                                               
+[08/06/26 01:11:49] INFO     Secrets list accessed       settings_router.py:298
+[08/06/26 01:11:49] INFO     127.0.0.1:62399 - "GET             h11_impl.py:473
+                             /api/settings/secrets HTTP/1.1"                   
+                             200                                               

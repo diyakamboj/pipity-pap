@@ -1,0 +1,42 @@
+[project]
+name = "HRAgent-tools"
+version = "1.37.1"
+description = "HRAgents Tools - Runtime tools for AI agents"
+
+requires-python = ">=3.12"
+dependencies = [
+    "HRAgent-sdk",
+    "tree-sitter>=0.24",
+    "tree-sitter-bash>=0.23",
+    "binaryornot>=0.4.4",
+    "cachetools",
+    "libtmux>=0.53.0",
+    "pydantic>=2.11.7",
+    "browser-use>=0.8.0",
+    "func-timeout>=4.3.5",
+    "tom-swe>=1.0.3",
+]
+
+[project.urls]
+Source = "https://github.com/HRAgents/software-agent-sdk"
+Homepage = "https://github.com/HRAgents/software-agent-sdk"
+Documentation = "https://docs.HRAgent.dev/sdk"
+"Bug Tracker" = "https://github.com/HRAgents/software-agent-sdk/issues"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-dir]
+"" = "."
+
+[tool.setuptools.packages.find]
+include = ["HRAgent.tools*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"*" = ["py.typed", "**/*.j2"]
+"HRAgent.tools.preset.subagents" = ["*.md"]

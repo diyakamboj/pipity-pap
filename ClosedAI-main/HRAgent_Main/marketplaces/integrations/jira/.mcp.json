@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "jira": {
+      "transport": "streamable-http",
+      "url": "https://mcp.atlassian.com/v1/mcp/authv2",
+      "auth": {
+        "strategy": "oauth2",
+        "authentication": {
+          "type": "oauth"
+        }
+      }
+    }
+  }
+}

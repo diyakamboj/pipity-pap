@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "notion": {
+      "transport": "streamable-http",
+      "url": "https://mcp.notion.com/mcp",
+      "auth": {
+        "strategy": "oauth2",
+        "authentication": {
+          "type": "oauth"
+        }
+      }
+    }
+  }
+}
