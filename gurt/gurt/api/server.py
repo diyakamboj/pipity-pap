@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from gurt.config import settings
@@ -53,7 +53,9 @@ from gurt.tools.logistics_tools import (
     tool_preview_schedule_change,
     tool_generate_role_briefing,
     tool_get_role_briefings,
-    tool_build_precision_run_of_show
+    tool_build_precision_run_of_show,
+    tool_propose_conflict_resolutions,
+    tool_apply_conflict_resolution
 )
 from gurt.tools.pdf_tools import fill_event_pdf_form, inspect_template_fields
 
@@ -163,6 +165,14 @@ class SchedulePreviewRequest(BaseModel):
     session_id: str
     proposed_changes: dict[str, Any]
     event_id: str = "evt-dubhacks-2026"
+
+
+class ApplyResolutionRequest(BaseModel):
+    event_id: str = "evt-dubhacks-2026"
+    session_id: str
+    proposed_changes: dict[str, Any]
+    expected_fingerprint: str | None = None
+    conflict_id: str | None = None
 
 
 class BriefingGenerateRequest(BaseModel):
@@ -457,6 +467,34 @@ def preview_schedule_impact_endpoint(req: SchedulePreviewRequest) -> dict[str, A
         proposed_changes=req.proposed_changes,
         event_id=req.event_id
     )
+
+
+@app.get("/api/logistics/conflicts/proposals")
+def get_conflict_proposals_endpoint(
+    event_id: str = Query("evt-dubhacks-2026"),
+    conflict_id: str | None = Query(None)
+) -> dict[str, Any]:
+    return tool_propose_conflict_resolutions(conflict_id=conflict_id, event_id=event_id)
+
+
+@app.post("/api/logistics/conflicts/apply")
+def apply_conflict_resolution_endpoint(req: ApplyResolutionRequest) -> JSONResponse:
+    result = tool_apply_conflict_resolution(
+        event_id=req.event_id,
+        session_id=req.session_id,
+        proposed_changes=req.proposed_changes,
+        expected_fingerprint=req.expected_fingerprint,
+        conflict_id=req.conflict_id
+    )
+    if result.get("status") == "error":
+        err_type = result.get("error")
+        if err_type in ("not_found",):
+            return JSONResponse(status_code=404, content=result)
+        elif err_type in ("stale_proposal", "conflict_already_resolved"):
+            return JSONResponse(status_code=409, content=result)
+        else:
+            return JSONResponse(status_code=400, content=result)
+    return JSONResponse(status_code=200, content=result)
 
 
 @app.get("/api/logistics/briefings")

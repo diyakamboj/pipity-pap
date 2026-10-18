@@ -718,6 +718,76 @@ def save_schedule_item(
     }
 
 
+def get_schedule_item_by_id(item_id: str, event_id: str | None = None) -> dict[str, Any] | None:
+    conn = get_connection()
+    c = conn.cursor()
+    if event_id:
+        c.execute("SELECT * FROM schedules WHERE id = ? AND event_id = ?", (item_id, event_id))
+    else:
+        c.execute("SELECT * FROM schedules WHERE id = ?", (item_id,))
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_schedule_item(
+    item_id: str,
+    updates: dict[str, Any],
+    event_id: str | None = None
+) -> dict[str, Any] | None:
+    conn = get_connection()
+    c = conn.cursor()
+
+    # Verify item exists
+    if event_id:
+        c.execute("SELECT * FROM schedules WHERE id = ? AND event_id = ?", (item_id, event_id))
+    else:
+        c.execute("SELECT * FROM schedules WHERE id = ?", (item_id,))
+    existing = c.fetchone()
+    if not existing:
+        conn.close()
+        return None
+
+    allowed_cols = {
+        "time_slot", "activity", "location", "owner", "activity_type",
+        "dependencies", "notes", "start_time", "end_time", "room",
+        "speaker_id", "vendor_id", "confirmation_state",
+        "setup_buffer_minutes", "teardown_buffer_minutes"
+    }
+
+    clean_updates = {k: v for k, v in updates.items() if k in allowed_cols}
+
+    # Synchronize room and location if one is updated
+    if "room" in clean_updates and "location" not in clean_updates:
+        clean_updates["location"] = clean_updates["room"]
+    elif "location" in clean_updates and "room" not in clean_updates:
+        clean_updates["room"] = clean_updates["location"]
+
+    # Synchronize time_slot if start_time and end_time are updated
+    if "start_time" in clean_updates and "end_time" in clean_updates and "time_slot" not in clean_updates:
+        clean_updates["time_slot"] = f"{clean_updates['start_time']} - {clean_updates['end_time']}"
+
+    if clean_updates:
+        set_clauses = [f"{col} = ?" for col in clean_updates.keys()]
+        values = list(clean_updates.values())
+        if event_id:
+            query = f"UPDATE schedules SET {', '.join(set_clauses)} WHERE id = ? AND event_id = ?"
+            values.extend([item_id, event_id])
+        else:
+            query = f"UPDATE schedules SET {', '.join(set_clauses)} WHERE id = ?"
+            values.append(item_id)
+        c.execute(query, values)
+        conn.commit()
+
+    if event_id:
+        c.execute("SELECT * FROM schedules WHERE id = ? AND event_id = ?", (item_id, event_id))
+    else:
+        c.execute("SELECT * FROM schedules WHERE id = ?", (item_id,))
+    updated_row = c.fetchone()
+    conn.close()
+    return dict(updated_row) if updated_row else None
+
+
 def save_pdf_document(
     event_id: str,
     template_name: str,
