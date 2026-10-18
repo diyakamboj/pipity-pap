@@ -128,6 +128,11 @@
             <span class="nav-icon">📅</span>
             <span class="nav-label">Run-of-Show</span>
           </button>
+          <button class="nav-item" id="nav-briefings" onclick="openSideCanvas('briefings', '📑', 'Role-Specific Briefings')">
+            <span class="nav-icon">📑</span>
+            <span class="nav-label">Role Briefings</span>
+            <span class="badge" id="nav-briefings-count">0</span>
+          </button>
           <button class="nav-item" id="nav-vendors" onclick="openSideCanvas('vendors', '🏪', 'Vendors & Sourcing')">
             <span class="nav-icon">🏪</span>
             <span class="nav-label">Vendors & Needs</span>
@@ -360,9 +365,37 @@
                   <h3>Run-of-Show Schedule</h3>
                   <p class="pane-desc">Timeline: 08:00 setup → keynote → workshops → lunch → demos → teardown.</p>
                 </div>
-                <button class="btn-small btn-primary" onclick="handleGenerateSchedule()">↻ Re-synthesize</button>
+                <div style="display:flex; gap:6px;">
+                  <button class="btn-small" onclick="checkScheduleConflicts()" title="Check for room collisions & turnover gaps">⚠️ Audit Conflicts</button>
+                  <button class="btn-small btn-primary" onclick="handleGenerateSchedule()">↻ Re-synthesize</button>
+                </div>
               </div>
+              <!-- Conflict Detection Alert Banner -->
+              <div id="schedule-conflicts-banner" style="display:none;"></div>
               <div class="timeline-list" id="schedule-list"><div class="loading-state">Loading schedule...</div></div>
+            </div>
+
+            <!-- PANE: Role-Specific Briefings (Positive Projection) -->
+            <div class="canvas-pane" id="pane-briefings">
+              <div class="pane-header">
+                <div>
+                  <h3>Role-Specific Briefings</h3>
+                  <p class="pane-desc">Filtered operational packets for Speakers, Vendors, and Volunteers with strict data leakage guards.</p>
+                </div>
+                <div style="display:flex; gap:6px;">
+                  <button class="btn-small btn-primary" onclick="openGenerateBriefingModal()">+ Generate Briefing</button>
+                </div>
+              </div>
+
+              <!-- Role Filter Chips -->
+              <div class="task-filter-chips">
+                <button class="task-filter-btn active" onclick="filterBriefings('all', this)">All Roles</button>
+                <button class="task-filter-btn" onclick="filterBriefings('speaker', this)">Speakers</button>
+                <button class="task-filter-btn" onclick="filterBriefings('vendor', this)">Vendors</button>
+                <button class="task-filter-btn" onclick="filterBriefings('volunteer', this)">Volunteers</button>
+              </div>
+
+              <div class="cards-list" id="briefings-list"><div class="loading-state">Loading role briefings...</div></div>
             </div>
 
             <!-- PANE: Vendors & Sourcing -->
@@ -786,6 +819,45 @@
       <div class="modal-actions" style="margin-top:16px;">
         <button type="button" class="btn-ghost" onclick="closeModal('memory-modal')">Close</button>
       </div>
+    </div>
+  <!-- Modal: Generate Role-Specific Briefing -->
+  <div class="modal-overlay" id="briefing-modal" style="display:none;">
+    <div class="modal-card" style="width:520px;">
+      <div class="modal-header">
+        <div>
+          <h3>Generate Role-Specific Briefing</h3>
+          <p style="font-size:12px; color:var(--text-secondary); margin-top:3px;">
+            Uses Positive Projection allowlist to compile run-of-show &amp; instructions without leaking private financial/speaker info.
+          </p>
+        </div>
+        <button class="close-btn" onclick="closeModal('briefing-modal')">&times;</button>
+      </div>
+      <form id="add-briefing-form" onsubmit="handleCreateBriefing(event)">
+        <div class="form-group">
+          <label>Target Role</label>
+          <select id="modal-briefing-role" required onchange="handleBriefingRoleChange(this.value)">
+            <option value="speaker">Speaker</option>
+            <option value="vendor">Vendor</option>
+            <option value="volunteer">Volunteer</option>
+          </select>
+        </div>
+        <div class="form-group" id="briefing-participant-group">
+          <label id="modal-briefing-target-label">Specific Participant (Optional)</label>
+          <select id="modal-briefing-target">
+            <option value="">-- All / General Role Packet --</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Security &amp; Projection Policy</label>
+          <div style="background:var(--bg-main); border:1px solid var(--border-color); border-radius:var(--radius-sm); padding:10px; font-size:11.5px; color:var(--text-secondary); line-height:1.4;">
+            🛡️ <strong>Allowlist Enforcement:</strong> Internal budgets, competitor quote pricing, and non-public contact emails are stripped automatically with SHA-256 state fingerprinting.
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" onclick="closeModal('briefing-modal')">Cancel</button>
+          <button type="submit" class="btn-primary">Generate Packet</button>
+        </div>
+      </form>
     </div>
   </div>
 

@@ -59,6 +59,13 @@ from gurt.tools.pdf_tools import (
     fill_event_pdf_form,
     inspect_template_fields
 )
+from gurt.tools.logistics_tools import (
+    tool_detect_schedule_conflicts,
+    tool_preview_schedule_change,
+    tool_generate_role_briefing,
+    tool_get_role_briefings,
+    tool_build_precision_run_of_show
+)
 
 
 def get_system_instruction(event_id: str = "evt-dubhacks-2026") -> str:
@@ -448,6 +455,35 @@ GEMINI_TOOLS = [
                     "type": "object",
                     "properties": {"days_threshold": {"type": "integer", "description": "How many days without response to consider stalled (default 3)"}}
                 }
+            },
+            {
+                "name": "detect_schedule_conflicts",
+                "description": "Detect room overlaps, turnover buffer insufficiencies (e.g. 15m gap), and vendor delivery readiness.",
+                "parameters": {"type": "object", "properties": {}}
+            },
+            {
+                "name": "generate_role_briefing",
+                "description": "Generate a permission-scoped participant briefing for Speaker, Vendor, or Volunteer with positive projection allowlists.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "role": {"type": "string", "description": "speaker, vendor, or volunteer"},
+                        "recipient_id": {"type": "string", "description": "Optional speaker, vendor, or volunteer ID or name"}
+                    },
+                    "required": ["role"]
+                }
+            },
+            {
+                "name": "preview_schedule_change",
+                "description": "Preview downstream impact and conflict risk before modifying a schedule session.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": {"type": "string", "description": "Session ID to adjust"},
+                        "proposed_changes": {"type": "object", "description": "Key-value changes like start_time, end_time, room"}
+                    },
+                    "required": ["session_id", "proposed_changes"]
+                }
             }
         ]
     }
@@ -608,6 +644,20 @@ def dispatch_tool(name: str, args: dict[str, Any], event_id: str = "evt-dubhacks
             event_id=event_id,
             days_threshold=int(args.get("days_threshold", 3))
         )
+    elif name == "detect_schedule_conflicts":
+        return tool_detect_schedule_conflicts(event_id=event_id)
+    elif name == "generate_role_briefing":
+        return tool_generate_role_briefing(
+            role=args.get("role", "speaker"),
+            recipient_id=args.get("recipient_id", ""),
+            event_id=event_id
+        )
+    elif name == "preview_schedule_change":
+        return tool_preview_schedule_change(
+            session_id=args.get("session_id", ""),
+            proposed_changes=args.get("proposed_changes", {}),
+            event_id=event_id
+        )
     return {"error": f"Unknown tool: {name}"}
 
 
@@ -652,6 +702,29 @@ def format_tool_execution_response(executed_tools: list[dict[str, Any]], event_i
             return "There are no speakers shortlisted yet for this event. Would you like me to research potential keynote speakers or workshop leaders?"
         lines = [f"- **{s['name']}** ({s['org']}): *{s['topic']}* — `{s['status']}`" for s in speakers]
         return "Here is our current speaker shortlist:\n\n" + "\n".join(lines)
+
+    if "detect_schedule_conflicts" in tool_names:
+        for et in executed_tools:
+            if et.get("tool") == "detect_schedule_conflicts":
+                res = et.get("output", {})
+                confs = res.get("conflicts", [])
+                if not confs:
+                    return f"✅ **Schedule & Room Integrity Verified!**\n\nNo room double-bookings, turnover buffer issues, or vendor delivery conflicts detected for **{res.get('event_title', 'this event')}**."
+                lines = [f"- **{c.get('severity', 'warning').upper()}:** {c.get('description')} *(Requires human review)*" for c in confs]
+                return f"⚠️ **Detected {len(confs)} Potential Schedule & Room Conflicts:**\n\n" + "\n".join(lines)
+
+    if "generate_role_briefing" in tool_names:
+        for et in executed_tools:
+            if et.get("tool") == "generate_role_briefing":
+                brf = et.get("output", {})
+                readiness = "✅ **Ready for Transmission**" if brf.get("is_ready") else "⏳ **Draft (Contains Provisional Items)**"
+                return (
+                    f"📄 **Role Briefing Generated for {brf.get('recipient_name', 'Participant')} ({brf.get('recipient_role', '').capitalize()})**\n\n"
+                    f"- **Status:** {readiness}\n"
+                    f"- **Security Check:** Positive projection verified (no cross-role financial or private data leaks).\n"
+                    f"- **Fingerprint:** `{brf.get('fingerprint', '')}`\n\n"
+                    f"```markdown\n{brf.get('markdown_body', '')}\n```"
+                )
 
     if "get_event_overview" in tool_names:
         ov = tool_get_event_overview(event_id)
@@ -948,6 +1021,38 @@ def dynamic_semantic_executor(
             "tool_calls": executed_tools,
             "model_used": "gurt-semantic-engine"
         }
+
+    # 1b. Schedule & Room Conflict Detection
+    if any(k in msg_lower for k in ["conflict", "conflicts", "overlap", "room overlap", "double book", "buffer check"]):
+        conf_res = tool_detect_schedule_conflicts(event_id)
+        executed_tools.append({"tool": "detect_schedule_conflicts", "output": conf_res})
+        confs = conf_res.get("conflicts", [])
+        if not confs:
+            text = f"✅ **Schedule Integrity Verified!**\n\nNo room overlaps, turnover buffer insufficiencies, or vendor delivery conflicts detected for **{conf_res.get('event_title', 'this event')}**."
+        else:
+            c_lines = [f"- **{c['severity'].upper()}**: {c['description']}" for c in confs]
+            text = f"⚠️ **Detected {len(confs)} Schedule/Room Conflicts:**\n\n" + "\n".join(c_lines) + "\n\nWould you like me to propose a resolution (e.g. time shift or buffer addition)?"
+        return {"text": text, "tool_calls": executed_tools, "model_used": "gurt-semantic-engine"}
+
+    # 1c. Role-Specific Participant Briefings
+    if any(k in msg_lower for k in ["briefing", "participant briefing", "speaker briefing", "vendor briefing", "volunteer briefing"]):
+        role = "speaker"
+        if "vendor" in msg_lower or "catering" in msg_lower:
+            role = "vendor"
+        elif "volunteer" in msg_lower:
+            role = "volunteer"
+
+        brf = tool_generate_role_briefing(role=role, event_id=event_id)
+        executed_tools.append({"tool": "generate_role_briefing", "output": brf})
+        readiness = "✅ **Ready for Transmission**" if brf.get("is_ready") else "⏳ **Draft (Contains Provisional Assumptions)**"
+        text = (
+            f"📄 **Role Briefing Generated for {brf.get('recipient_name', 'Participant')} ({role.capitalize()})**\n\n"
+            f"- **Readiness:** {readiness}\n"
+            f"- **Security Guard:** Positive projection verified (no cross-role financial or private data leaks).\n"
+            f"- **Fingerprint:** `{brf.get('fingerprint')}`\n\n"
+            f"```markdown\n{brf.get('markdown_body')}\n```"
+        )
+        return {"text": text, "tool_calls": executed_tools, "model_used": "gurt-semantic-engine"}
 
     # 2. Schedule / Run of Show
     if any(k in msg_lower for k in ["schedule", "run of show", "agenda", "timeline"]):

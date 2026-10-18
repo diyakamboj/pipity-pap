@@ -36,7 +36,8 @@ from gurt.db import (
     save_message,
     get_memories,
     save_memory,
-    delete_memory
+    delete_memory,
+    get_audit_logs
 )
 from gurt.orchestrator import run_orchestrator
 from gurt.tools.outreach_tools import execute_approved_action, dismiss_action, tool_update_draft
@@ -46,6 +47,13 @@ from gurt.tools.event_tools import (
     tool_add_vendor_quote,
     tool_generate_schedule,
     tool_lookup_schedule
+)
+from gurt.tools.logistics_tools import (
+    tool_detect_schedule_conflicts,
+    tool_preview_schedule_change,
+    tool_generate_role_briefing,
+    tool_get_role_briefings,
+    tool_build_precision_run_of_show
 )
 from gurt.tools.pdf_tools import fill_event_pdf_form, inspect_template_fields
 
@@ -149,6 +157,18 @@ class BriefUpdateRequest(BaseModel):
 class DraftUpdateRequest(BaseModel):
     subject: str | None = None
     message_body: str | None = None
+
+
+class SchedulePreviewRequest(BaseModel):
+    session_id: str
+    proposed_changes: dict[str, Any]
+    event_id: str = "evt-dubhacks-2026"
+
+
+class BriefingGenerateRequest(BaseModel):
+    role: str = "speaker"
+    recipient_id: str = ""
+    event_id: str = "evt-dubhacks-2026"
 
 
 @app.get("/api/health")
@@ -420,6 +440,53 @@ def download_pdf_endpoint(filename: str) -> FileResponse:
         media_type="application/pdf",
         filename=filename
     )
+
+
+# ---------------------------------------------------------------------------
+# Logistics & Safety Engine Endpoints
+# ---------------------------------------------------------------------------
+@app.get("/api/logistics/conflicts")
+def get_logistics_conflicts_endpoint(event_id: str = Query("evt-dubhacks-2026")) -> dict[str, Any]:
+    return tool_detect_schedule_conflicts(event_id=event_id)
+
+
+@app.post("/api/logistics/schedule/preview")
+def preview_schedule_impact_endpoint(req: SchedulePreviewRequest) -> dict[str, Any]:
+    return tool_preview_schedule_change(
+        session_id=req.session_id,
+        proposed_changes=req.proposed_changes,
+        event_id=req.event_id
+    )
+
+
+@app.get("/api/logistics/briefings")
+def get_briefings_endpoint(
+    event_id: str = Query("evt-dubhacks-2026"),
+    role: str | None = Query(None)
+) -> list[dict[str, Any]]:
+    return tool_get_role_briefings(event_id=event_id, role=role)
+
+
+@app.post("/api/logistics/briefings/generate")
+def generate_briefing_endpoint(req: BriefingGenerateRequest) -> dict[str, Any]:
+    return tool_generate_role_briefing(
+        role=req.role,
+        recipient_id=req.recipient_id,
+        event_id=req.event_id
+    )
+
+
+@app.get("/api/logistics/run-of-show")
+def get_precision_run_of_show_endpoint(event_id: str = Query("evt-dubhacks-2026")) -> dict[str, Any]:
+    return tool_build_precision_run_of_show(event_id=event_id)
+
+
+@app.get("/api/logistics/audit-logs")
+def get_audit_logs_endpoint(
+    event_id: str = Query("evt-dubhacks-2026"),
+    limit: int = Query(50)
+) -> list[dict[str, Any]]:
+    return get_audit_logs(event_id=event_id, limit=limit)
 
 
 # Mount static assets

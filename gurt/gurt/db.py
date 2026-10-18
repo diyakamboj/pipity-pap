@@ -177,6 +177,31 @@ def init_db() -> None:
         category TEXT NOT NULL,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS briefings (
+        id TEXT PRIMARY KEY,
+        event_id TEXT DEFAULT 'evt-dubhacks-2026',
+        recipient_role TEXT NOT NULL,
+        recipient_id TEXT,
+        recipient_name TEXT,
+        version INTEGER DEFAULT 1,
+        status TEXT NOT NULL,
+        content_json TEXT NOT NULL,
+        source_fingerprint TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+        id TEXT PRIMARY KEY,
+        event_id TEXT DEFAULT 'evt-dubhacks-2026',
+        actor_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        target_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        details_json TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """)
 
     # Apply incremental migrations to existing databases
@@ -195,6 +220,33 @@ def init_db() -> None:
     _ensure_column(cursor, "sponsors", "event_id TEXT DEFAULT 'evt-dubhacks-2026'")
     _ensure_column(cursor, "tasks", "event_id TEXT DEFAULT 'evt-dubhacks-2026'")
     _ensure_column(cursor, "action_proposals", "event_id TEXT DEFAULT 'evt-dubhacks-2026'")
+
+    # Schedule extensions for precision logistics & conflict detection
+    for tbl in ("schedules", "schedule"):
+        try:
+            _ensure_column(cursor, tbl, "start_time TEXT")
+            _ensure_column(cursor, tbl, "end_time TEXT")
+            _ensure_column(cursor, tbl, "room TEXT")
+            _ensure_column(cursor, tbl, "speaker_id TEXT")
+            _ensure_column(cursor, tbl, "vendor_id TEXT")
+            _ensure_column(cursor, tbl, "confirmation_state TEXT DEFAULT 'tentative'")
+            _ensure_column(cursor, tbl, "setup_buffer_minutes INTEGER DEFAULT 0")
+            _ensure_column(cursor, tbl, "teardown_buffer_minutes INTEGER DEFAULT 0")
+        except Exception:
+            pass
+
+    # Backfill start_time, end_time, room from time_slot and location
+    cursor.execute("""
+        UPDATE schedules
+        SET room = location
+        WHERE (room IS NULL OR room = '') AND location IS NOT NULL
+    """)
+    cursor.execute("""
+        UPDATE schedules
+        SET start_time = TRIM(SUBSTR(time_slot, 1, INSTR(time_slot, '-') - 1)),
+            end_time = TRIM(SUBSTR(time_slot, INSTR(time_slot, '-') + 1))
+        WHERE (start_time IS NULL OR start_time = '') AND INSTR(time_slot, '-') > 0
+    """)
 
     # Backfill event_id for existing rows
     cursor.execute("UPDATE speakers SET event_id = 'evt-dubhacks-2026' WHERE event_id IS NULL OR event_id = ''")
@@ -903,3 +955,189 @@ def delete_memory(memory_id: str) -> bool:
     conn.commit()
     conn.close()
     return True
+
+
+# ---------------------------------------------------------------------------
+# Briefings CRUD & Versioning
+# ---------------------------------------------------------------------------
+def save_briefing(
+    event_id: str = "evt-dubhacks-2026",
+    recipient_role: str = "speaker",
+    recipient_id: str = "",
+    recipient_name: str = "",
+    content_dict: dict[str, Any] | None = None,
+    source_fingerprint: str = "",
+    status: str = "draft",
+    version: int = 1
+) -> dict[str, Any]:
+    """Save or update a role-specific participant briefing draft."""
+    content_json = json.dumps(content_dict or {})
+    now = datetime.now().isoformat()
+    conn = get_connection()
+    c = conn.cursor()
+
+    # Check if a briefing already exists for this role + recipient
+    c.execute(
+        "SELECT id, version FROM briefings WHERE event_id = ? AND recipient_role = ? AND recipient_id = ?",
+        (event_id, recipient_role, recipient_id)
+    )
+    existing = c.fetchone()
+    if existing:
+        briefing_id = existing[0]
+        new_version = existing[1] + 1 if status == "revised" else existing[1]
+        c.execute("""
+            UPDATE briefings
+            SET recipient_name = ?, version = ?, status = ?, content_json = ?, source_fingerprint = ?, updated_at = ?
+            WHERE id = ?
+        """, (recipient_name, new_version, status, content_json, source_fingerprint, now, briefing_id))
+    else:
+        briefing_id = f"brf-{uuid.uuid4().hex[:6]}"
+        c.execute("""
+            INSERT INTO briefings (
+                id, event_id, recipient_role, recipient_id, recipient_name, version, status,
+                content_json, source_fingerprint, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            briefing_id, event_id, recipient_role, recipient_id, recipient_name, version, status,
+            content_json, source_fingerprint, now, now
+        ))
+
+    conn.commit()
+    conn.close()
+    return {
+        "id": briefing_id,
+        "event_id": event_id,
+        "recipient_role": recipient_role,
+        "recipient_id": recipient_id,
+        "recipient_name": recipient_name,
+        "version": version,
+        "status": status,
+        "source_fingerprint": source_fingerprint,
+        "content": content_dict or {},
+        "updated_at": now
+    }
+
+
+def get_briefings(event_id: str = "evt-dubhacks-2026", recipient_role: str | None = None) -> list[dict[str, Any]]:
+    """Retrieve participant briefings for an event, optionally filtered by role."""
+    conn = get_connection()
+    c = conn.cursor()
+    if recipient_role:
+        c.execute(
+            "SELECT * FROM briefings WHERE event_id = ? AND recipient_role = ? ORDER BY updated_at DESC",
+            (event_id, recipient_role)
+        )
+    else:
+        c.execute("SELECT * FROM briefings WHERE event_id = ? ORDER BY updated_at DESC", (event_id,))
+
+    rows = c.fetchall()
+    results = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["content"] = json.loads(d.get("content_json") or "{}")
+        except Exception:
+            d["content"] = {}
+        results.append(d)
+    conn.close()
+    return results
+
+
+def get_briefing_by_id(briefing_id: str) -> dict[str, Any] | None:
+    """Retrieve single briefing by ID."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT * FROM briefings WHERE id = ?", (briefing_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    d = dict(row)
+    try:
+        d["content"] = json.loads(d.get("content_json") or "{}")
+    except Exception:
+        d["content"] = {}
+    return d
+
+
+def mark_briefing_status(briefing_id: str, status: str) -> bool:
+    """Update briefing status (e.g. 'ready', 'sent')."""
+    now = datetime.now().isoformat()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("UPDATE briefings SET status = ?, updated_at = ? WHERE id = ?", (status, now, briefing_id))
+    conn.commit()
+    conn.close()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Audit Logs
+# ---------------------------------------------------------------------------
+def log_audit_event(
+    event_id: str = "evt-dubhacks-2026",
+    actor_id: str = "organizer",
+    action: str = "schedule_updated",
+    target_type: str = "schedule",
+    target_id: str = "",
+    details: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Record an immutable, durable audit log event."""
+    log_id = f"aud-{uuid.uuid4().hex[:6]}"
+    now = datetime.now().isoformat()
+    details_str = json.dumps(details or {})
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO audit_logs (id, event_id, actor_id, action, target_type, target_id, details_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (log_id, event_id, actor_id, action, target_type, target_id, details_str, now))
+    conn.commit()
+    conn.close()
+    return {
+        "id": log_id,
+        "event_id": event_id,
+        "actor_id": actor_id,
+        "action": action,
+        "target_type": target_type,
+        "target_id": target_id,
+        "details": details or {},
+        "created_at": now
+    }
+
+
+def get_audit_logs(event_id: str = "evt-dubhacks-2026", limit: int = 50) -> list[dict[str, Any]]:
+    """Retrieve audit log history for an event."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT * FROM audit_logs WHERE event_id = ? ORDER BY created_at DESC LIMIT ?",
+        (event_id, limit)
+    )
+    rows = c.fetchall()
+    results = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["details"] = json.loads(d.get("details_json") or "{}")
+        except Exception:
+            d["details"] = {}
+        results.append(d)
+    conn.close()
+    return results
+
+
+def get_tasks(event_id: str = "evt-dubhacks-2026") -> list[dict[str, Any]]:
+    """Retrieve all tasks for an event."""
+    return query_records("tasks", event_id=event_id)
+
+
+def get_schedule(event_id: str = "evt-dubhacks-2026") -> list[dict[str, Any]]:
+    """Retrieve schedule items for an event."""
+    return get_schedule_items(event_id=event_id)
+
+
+def get_event(event_id: str = "evt-dubhacks-2026") -> dict[str, Any]:
+    """Retrieve event brief for an event."""
+    return get_event_brief(event_id=event_id)
+
