@@ -6,6 +6,7 @@ event briefs, vendor requirements, schedules, speakers, and sponsors.
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 from gurt.db import (
@@ -18,6 +19,11 @@ from gurt.db import (
     list_all_events,
     get_vendor_requirements,
     save_vendor_requirement,
+    get_vendor_requirement_by_id,
+    update_vendor_requirement,
+    get_vendor_by_id,
+    update_vendor,
+    record_vendor_selection,
     get_schedule_items,
     save_schedule_item,
     clear_schedule_items
@@ -229,6 +235,445 @@ def tool_lookup_vendors(category: str = "", event_id: str = "evt-dubhacks-2026")
     return results
 
 
+def check_dietary_coverage(required_dietary: str | list[str], vendor_coverage: list[str] | str) -> dict[str, Any]:
+    """Helper to evaluate dietary restriction accommodations against vendor offerings."""
+    common_tags = ["vegan", "vegetarian", "gluten-free", "nut-free", "halal", "kosher", "dairy-free"]
+
+    req_tags = set()
+    if isinstance(required_dietary, list):
+        for item in required_dietary:
+            item_str = str(item).lower()
+            for tag in common_tags:
+                if tag in item_str or (tag == "gluten-free" and ("gf" in item_str or "gluten free" in item_str)):
+                    req_tags.add(tag)
+    else:
+        text = str(required_dietary or "").lower()
+        for tag in common_tags:
+            if tag in text or (tag == "gluten-free" and ("gf" in text or "gluten free" in text)):
+                req_tags.add(tag)
+
+    vnd_tags = set()
+    if isinstance(vendor_coverage, list):
+        for item in vendor_coverage:
+            item_str = str(item).lower()
+            for tag in common_tags:
+                if tag in item_str or (tag == "gluten-free" and ("gf" in item_str or "gluten free" in item_str)):
+                    vnd_tags.add(tag)
+    else:
+        text = str(vendor_coverage or "").lower()
+        for tag in common_tags:
+            if tag in text or (tag == "gluten-free" and ("gf" in text or "gluten free" in text)):
+                vnd_tags.add(tag)
+
+    covered = sorted(list(req_tags.intersection(vnd_tags)))
+    uncovered = sorted(list(req_tags - vnd_tags))
+    return {
+        "required_dietary_tags": sorted(list(req_tags)),
+        "vendor_dietary_tags": sorted(list(vnd_tags)),
+        "covered_tags": covered,
+        "uncovered_tags": uncovered,
+        "is_fully_covered": len(uncovered) == 0
+    }
+
+
+def tool_calculate_quote_cost(
+    quantities: int | float,
+    unit_price: float,
+    tax: float | None = None,
+    tax_is_unknown: bool = False,
+    delivery_fee: float | None = None,
+    delivery_fee_is_unknown: bool = False,
+    other_fees: float = 0.0,
+    quoted_headcount: int | None = None,
+    target_headcount: int | None = None
+) -> dict[str, Any]:
+    """Accurately calculate quote subtotal, base cost, and per-attendee cost.
+    CRITICAL: Never treats unknown fees as zero or assumes a quote stays valid after headcount changes.
+    """
+    qty = float(quantities)
+    price = float(unit_price)
+    subtotal = round(qty * price, 2)
+
+    unknown_fees = []
+    known_fees_total = 0.0
+
+    # Tax evaluation
+    if tax_is_unknown or tax is None:
+        unknown_fees.append("tax")
+        tax_amount = None
+        tax_status = "unknown"
+    else:
+        tax_amount = round(float(tax), 2)
+        known_fees_total += tax_amount
+        tax_status = "known"
+
+    # Delivery fee evaluation
+    if delivery_fee_is_unknown or delivery_fee is None:
+        unknown_fees.append("delivery_fee")
+        delivery_amount = None
+        delivery_status = "unknown"
+    else:
+        delivery_amount = round(float(delivery_fee), 2)
+        known_fees_total += delivery_amount
+        delivery_status = "known"
+
+    other_amount = round(float(other_fees or 0.0), 2)
+    known_fees_total += other_amount
+
+    base_cost = round(subtotal + known_fees_total, 2)
+    has_unknown_fees = len(unknown_fees) > 0
+    is_total_definite = not has_unknown_fees
+
+    # Headcount validity check
+    q_headcount = int(quoted_headcount if quoted_headcount is not None else qty)
+    headcount_mismatch = False
+    headcount_warning = None
+    is_valid_for_headcount = True
+
+    if target_headcount is not None and target_headcount > 0:
+        if q_headcount != target_headcount:
+            headcount_mismatch = True
+            is_valid_for_headcount = False
+            headcount_warning = (
+                f"Headcount mismatch: Quote was priced for {q_headcount} attendees, "
+                f"but event requirement is {target_headcount} attendees. "
+                "Quote cannot be assumed valid after headcount change; pricing tier, minimums, or delivery fees must be re-quoted."
+            )
+
+    per_attendee_cost = round(base_cost / qty, 2) if qty > 0 else 0.0
+
+    cost_classification = "definite_quote" if is_total_definite else "known_cost_subtotal_estimate"
+    is_estimate = has_unknown_fees
+    if is_total_definite:
+        total_label = f"${base_cost:,.2f} (definite total quote)"
+        price_per_head_label = f"${per_attendee_cost:,.2f}/head (definite quote)"
+    else:
+        total_label = f"${base_cost:,.2f} (estimate / known-cost subtotal; excludes {', '.join(unknown_fees)})"
+        price_per_head_label = f"${per_attendee_cost:,.2f}/head (provisional estimate)"
+
+    assumptions = []
+    if has_unknown_fees:
+        assumptions.append(
+            f"Quote excludes unknown fees ({', '.join(unknown_fees)}). Total base of ${base_cost:,.2f} is an incomplete known-cost subtotal estimate; actual cost will be higher. Never treated as $0.00."
+        )
+    else:
+        assumptions.append("All line-item taxes and delivery fees are explicitly quantified.")
+
+    if headcount_mismatch:
+        assumptions.append(headcount_warning)
+    else:
+        assumptions.append(f"Quote is valid for {q_headcount} attendees.")
+
+    return {
+        "quantities": qty,
+        "unit_price": price,
+        "subtotal": subtotal,
+        "tax": tax_amount,
+        "tax_status": tax_status,
+        "delivery_fee": delivery_amount,
+        "delivery_fee_status": delivery_status,
+        "other_fees": other_amount,
+        "known_fees_total": known_fees_total,
+        "base_cost": base_cost,
+        "is_total_definite": is_total_definite,
+        "has_unknown_fees": has_unknown_fees,
+        "unknown_fees": unknown_fees,
+        "cost_classification": cost_classification,
+        "is_estimate": is_estimate,
+        "total_label": total_label,
+        "price_per_head_label": price_per_head_label,
+        "definite_quote_amount": base_cost if is_total_definite else None,
+        "known_cost_subtotal": base_cost,
+        "unknown_fees_warning": (
+            f"WARNING: Unknown fees present: {', '.join(unknown_fees)}. Total of ${base_cost:,.2f} is an incomplete known-cost subtotal estimate. Missing fees must NEVER be treated as $0.00."
+            if has_unknown_fees else None
+        ),
+        "per_attendee_cost": per_attendee_cost,
+        "per_attendee_is_provisional": has_unknown_fees,
+        "quoted_headcount": q_headcount,
+        "target_headcount": target_headcount,
+        "headcount_mismatch": headcount_mismatch,
+        "is_valid_for_headcount": is_valid_for_headcount,
+        "headcount_warning": headcount_warning,
+        "assumptions": assumptions
+    }
+
+
+def tool_add_detailed_vendor_quote(
+    company_name: str,
+    category: str = "Catering",
+    quantities: int | float = 80,
+    unit_price: float = 0.0,
+    tax: float | None = None,
+    tax_is_unknown: bool = False,
+    delivery_fee: float | None = None,
+    delivery_fee_is_unknown: bool = False,
+    other_fees: float = 0.0,
+    dietary_coverage: list[str] | str | None = None,
+    source: str = "organizer-supplied quote",
+    quote_status: str = "quoted",
+    contact_email: str = "",
+    details: str = "",
+    quoted_headcount: int | None = None,
+    unknown_details: list[str] | str | None = None,
+    event_id: str = "evt-dubhacks-2026"
+) -> dict[str, Any]:
+    """Add or update an organizer-supplied vendor quote with line items, fees, dietary coverage, and source."""
+    if dietary_coverage is None:
+        dietary_list = []
+    elif isinstance(dietary_coverage, list):
+        dietary_list = [str(x).strip() for x in dietary_coverage if str(x).strip()]
+    else:
+        dietary_list = [x.strip() for x in str(dietary_coverage).split(",") if x.strip()]
+
+    if unknown_details is None:
+        unknown_list = []
+    elif isinstance(unknown_details, list):
+        unknown_list = [str(x).strip() for x in unknown_details if str(x).strip()]
+    else:
+        unknown_list = [x.strip() for x in str(unknown_details).split(";") if x.strip()]
+
+    cost_calc = tool_calculate_quote_cost(
+        quantities=quantities,
+        unit_price=unit_price,
+        tax=tax,
+        tax_is_unknown=tax_is_unknown,
+        delivery_fee=delivery_fee,
+        delivery_fee_is_unknown=delivery_fee_is_unknown,
+        other_fees=other_fees,
+        quoted_headcount=quoted_headcount
+    )
+
+    quote_data = {
+        "quantities": cost_calc["quantities"],
+        "unit_price": cost_calc["unit_price"],
+        "subtotal": cost_calc["subtotal"],
+        "tax": cost_calc["tax"],
+        "tax_status": cost_calc["tax_status"],
+        "delivery_fee": cost_calc["delivery_fee"],
+        "delivery_fee_status": cost_calc["delivery_fee_status"],
+        "other_fees": cost_calc["other_fees"],
+        "known_fees_total": cost_calc["known_fees_total"],
+        "base_cost": cost_calc["base_cost"],
+        "is_total_definite": cost_calc["is_total_definite"],
+        "has_unknown_fees": cost_calc["has_unknown_fees"],
+        "unknown_fees": cost_calc["unknown_fees"],
+        "per_attendee_cost": cost_calc["per_attendee_cost"],
+        "dietary_coverage": dietary_list,
+        "source": source,
+        "quoted_headcount": cost_calc["quoted_headcount"],
+        "unknown_details": unknown_list,
+        "assumptions": cost_calc["assumptions"]
+    }
+
+    if not details:
+        diet_str = ", ".join(dietary_list) if dietary_list else "Standard menu"
+        tax_str = f"${cost_calc['tax']:.2f}" if cost_calc['tax'] is not None else "Unknown"
+        deliv_str = f"${cost_calc['delivery_fee']:.2f}" if cost_calc['delivery_fee'] is not None else "Unknown"
+        details = (
+            f"Quote for {cost_calc['quantities']} units at ${cost_calc['unit_price']:.2f}/unit. "
+            f"Dietary: {diet_str}. Tax: {tax_str}, Delivery: {deliv_str}. Source: {source}."
+        )
+
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT id FROM vendors WHERE event_id = ? AND LOWER(TRIM(company_name)) = LOWER(?) AND LOWER(TRIM(category)) = LOWER(?)",
+        (event_id, company_name.strip(), category.strip())
+    )
+    existing = c.fetchone()
+    conn.close()
+
+    if existing:
+        vnd_id = existing["id"]
+        update_vendor(vnd_id, {
+            "company_name": company_name.strip(),
+            "category": category.strip(),
+            "quote_amount": cost_calc["base_cost"],
+            "price_per_head": cost_calc["per_attendee_cost"],
+            "status": quote_status,
+            "contact_email": contact_email,
+            "details": details,
+            "quote_data": quote_data
+        }, event_id=event_id)
+        return {
+            "status": "updated",
+            "vendor_id": vnd_id,
+            "company_name": company_name,
+            "category": category,
+            "quote_amount": cost_calc["base_cost"],
+            "price_per_head": cost_calc["per_attendee_cost"],
+            "quote_status": quote_status,
+            "quote_data": quote_data,
+            "details": details
+        }
+
+    vnd_id = f"vnd-{uuid.uuid4().hex[:6]}"
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO vendors (id, event_id, category, company_name, quote_amount, price_per_head, status, contact_email, details, quote_data)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            vnd_id, event_id, category.strip(), company_name.strip(),
+            cost_calc["base_cost"], cost_calc["per_attendee_cost"],
+            quote_status, contact_email, details, json.dumps(quote_data)
+        )
+    )
+    conn.commit()
+    conn.close()
+
+    return {
+        "status": "added",
+        "vendor_id": vnd_id,
+        "company_name": company_name,
+        "category": category,
+        "quote_amount": cost_calc["base_cost"],
+        "cost_classification": cost_calc["cost_classification"],
+        "is_estimate": cost_calc["is_estimate"],
+        "total_label": cost_calc["total_label"],
+        "price_per_head": cost_calc["per_attendee_cost"],
+        "price_per_head_label": cost_calc["price_per_head_label"],
+        "quote_status": quote_status,
+        "calculation": cost_calc,
+        "quote_data": quote_data,
+        "details": details
+    }
+
+
+def tool_update_vendor_quote(
+    vendor_id: str,
+    event_id: str = "evt-dubhacks-2026",
+    company_name: str | None = None,
+    category: str | None = None,
+    quantities: int | float | None = None,
+    unit_price: float | None = None,
+    tax: float | None = None,
+    tax_is_unknown: bool | None = None,
+    delivery_fee: float | None = None,
+    delivery_fee_is_unknown: bool | None = None,
+    other_fees: float | None = None,
+    dietary_coverage: list[str] | str | None = None,
+    source: str | None = None,
+    quote_status: str | None = None,
+    contact_email: str | None = None,
+    details: str | None = None,
+    quoted_headcount: int | None = None,
+    unknown_details: list[str] | str | None = None
+) -> dict[str, Any]:
+    """Edit an existing vendor quote, recomputing costs, unknown fee warnings, and persistence."""
+    vendor = get_vendor_by_id(vendor_id, event_id=event_id)
+    if not vendor:
+        raise ValueError(f"Vendor '{vendor_id}' not found for event '{event_id}'")
+
+    existing_qd = vendor.get("quote_data") or {}
+
+    q_quantities = quantities if quantities is not None else existing_qd.get("quantities", 80)
+    q_unit_price = unit_price if unit_price is not None else existing_qd.get("unit_price", vendor.get("price_per_head", 0.0))
+    q_tax = tax if tax is not None else existing_qd.get("tax")
+    q_tax_unknown = tax_is_unknown if tax_is_unknown is not None else (existing_qd.get("tax_status") == "unknown" if "tax_status" in existing_qd else (q_tax is None))
+    q_deliv = delivery_fee if delivery_fee is not None else existing_qd.get("delivery_fee")
+    q_deliv_unknown = delivery_fee_is_unknown if delivery_fee_is_unknown is not None else (existing_qd.get("delivery_fee_status") == "unknown" if "delivery_fee_status" in existing_qd else (q_deliv is None))
+    q_other = other_fees if other_fees is not None else existing_qd.get("other_fees", 0.0)
+    q_headcount = quoted_headcount if quoted_headcount is not None else existing_qd.get("quoted_headcount", q_quantities)
+
+    if dietary_coverage is not None:
+        if isinstance(dietary_coverage, list):
+            q_diet = [str(x).strip() for x in dietary_coverage if str(x).strip()]
+        else:
+            q_diet = [x.strip() for x in str(dietary_coverage).split(",") if x.strip()]
+    else:
+        q_diet = existing_qd.get("dietary_coverage", [])
+
+    if unknown_details is not None:
+        if isinstance(unknown_details, list):
+            q_unknown_details = [str(x).strip() for x in unknown_details if str(x).strip()]
+        else:
+            q_unknown_details = [x.strip() for x in str(unknown_details).split(";") if x.strip()]
+    else:
+        q_unknown_details = existing_qd.get("unknown_details", [])
+
+    q_source = source if source is not None else existing_qd.get("source", "organizer-supplied quote")
+    q_status = quote_status if quote_status is not None else vendor.get("status", "quoted")
+    q_name = company_name if company_name is not None else vendor.get("company_name", "")
+    q_category = category if category is not None else vendor.get("category", "Catering")
+    q_email = contact_email if contact_email is not None else vendor.get("contact_email", "")
+
+    cost_calc = tool_calculate_quote_cost(
+        quantities=q_quantities,
+        unit_price=q_unit_price,
+        tax=q_tax,
+        tax_is_unknown=q_tax_unknown,
+        delivery_fee=q_deliv,
+        delivery_fee_is_unknown=q_deliv_unknown,
+        other_fees=q_other,
+        quoted_headcount=q_headcount
+    )
+
+    new_qd = {
+        "quantities": cost_calc["quantities"],
+        "unit_price": cost_calc["unit_price"],
+        "subtotal": cost_calc["subtotal"],
+        "tax": cost_calc["tax"],
+        "tax_status": cost_calc["tax_status"],
+        "delivery_fee": cost_calc["delivery_fee"],
+        "delivery_fee_status": cost_calc["delivery_fee_status"],
+        "other_fees": cost_calc["other_fees"],
+        "known_fees_total": cost_calc["known_fees_total"],
+        "base_cost": cost_calc["base_cost"],
+        "is_total_definite": cost_calc["is_total_definite"],
+        "has_unknown_fees": cost_calc["has_unknown_fees"],
+        "unknown_fees": cost_calc["unknown_fees"],
+        "per_attendee_cost": cost_calc["per_attendee_cost"],
+        "dietary_coverage": q_diet,
+        "source": q_source,
+        "quoted_headcount": cost_calc["quoted_headcount"],
+        "unknown_details": q_unknown_details,
+        "assumptions": cost_calc["assumptions"]
+    }
+
+    if details is not None:
+        q_details = details
+    else:
+        diet_str = ", ".join(q_diet) if q_diet else "Standard menu"
+        tax_str = f"${cost_calc['tax']:.2f}" if cost_calc['tax'] is not None else "Unknown"
+        deliv_str = f"${cost_calc['delivery_fee']:.2f}" if cost_calc['delivery_fee'] is not None else "Unknown"
+        q_details = (
+            f"Quote for {cost_calc['quantities']} units at ${cost_calc['unit_price']:.2f}/unit. "
+            f"Dietary: {diet_str}. Tax: {tax_str}, Delivery: {deliv_str}. Source: {q_source}."
+        )
+
+    update_vendor(vendor_id, {
+        "company_name": q_name,
+        "category": q_category,
+        "quote_amount": cost_calc["base_cost"],
+        "price_per_head": cost_calc["per_attendee_cost"],
+        "status": q_status,
+        "contact_email": q_email,
+        "details": q_details,
+        "quote_data": new_qd
+    }, event_id=event_id)
+
+    return {
+        "status": "updated",
+        "vendor_id": vendor_id,
+        "company_name": q_name,
+        "category": q_category,
+        "quote_amount": cost_calc["base_cost"],
+        "cost_classification": cost_calc["cost_classification"],
+        "is_estimate": cost_calc["is_estimate"],
+        "total_label": cost_calc["total_label"],
+        "price_per_head": cost_calc["per_attendee_cost"],
+        "price_per_head_label": cost_calc["price_per_head_label"],
+        "quote_status": q_status,
+        "calculation": cost_calc,
+        "quote_data": new_qd,
+        "details": q_details
+    }
+
+
 def tool_add_vendor_quote(
     company_name: str,
     category: str,
@@ -236,9 +681,45 @@ def tool_add_vendor_quote(
     price_per_head: float = 0.0,
     details: str = "",
     contact_email: str = "",
-    event_id: str = "evt-dubhacks-2026"
+    event_id: str = "evt-dubhacks-2026",
+    quantities: int | float | None = None,
+    unit_price: float | None = None,
+    tax: float | None = None,
+    tax_is_unknown: bool = False,
+    delivery_fee: float | None = None,
+    delivery_fee_is_unknown: bool = False,
+    other_fees: float = 0.0,
+    dietary_coverage: list[str] | str | None = None,
+    source: str = "organizer-supplied quote",
+    quote_status: str = "quoted",
+    quoted_headcount: int | None = None,
+    unknown_details: list[str] | str | None = None
 ) -> dict[str, Any]:
-    """Add a new vendor quote or supplier comparison to the event database."""
+    """Add or update a vendor quote in the event database (backward-compatible)."""
+    if quantities is not None or unit_price is not None or tax is not None or delivery_fee is not None or dietary_coverage is not None:
+        q_quantities = quantities if quantities is not None else 80
+        q_unit_price = unit_price if unit_price is not None else (price_per_head if price_per_head > 0 else (quote_amount / q_quantities if q_quantities else 0.0))
+        return tool_add_detailed_vendor_quote(
+            company_name=company_name,
+            category=category,
+            quantities=q_quantities,
+            unit_price=q_unit_price,
+            tax=tax,
+            tax_is_unknown=tax_is_unknown,
+            delivery_fee=delivery_fee,
+            delivery_fee_is_unknown=delivery_fee_is_unknown,
+            other_fees=other_fees,
+            dietary_coverage=dietary_coverage,
+            source=source,
+            quote_status=quote_status,
+            contact_email=contact_email,
+            details=details,
+            quoted_headcount=quoted_headcount,
+            unknown_details=unknown_details,
+            event_id=event_id
+        )
+
+    # Legacy invocation: preserve exact quote_amount and price_per_head
     vnd_id = f"vnd-{uuid.uuid4().hex[:6]}"
     conn = get_connection()
     c = conn.cursor()
@@ -259,8 +740,8 @@ def tool_add_vendor_quote(
             "status": "updated",
             "vendor_id": vnd_id,
             "company_name": company_name,
-            "quote_amount": quote_amount,
-            "price_per_head": price_per_head
+            "quote_amount": float(quote_amount),
+            "price_per_head": float(price_per_head)
         }
 
     c.execute(
@@ -276,8 +757,8 @@ def tool_add_vendor_quote(
         "status": "added",
         "vendor_id": vnd_id,
         "company_name": company_name,
-        "quote_amount": quote_amount,
-        "price_per_head": price_per_head
+        "quote_amount": float(quote_amount),
+        "price_per_head": float(price_per_head)
     }
 
 
@@ -291,8 +772,13 @@ def tool_save_vendor_requirement(
     specification: str,
     headcount: int = 80,
     budget_allocated: float = 0.0,
-    unknowns: str = "",
+    unknowns: str | list[str] = "",
     status: str = "quoted",
+    dietary_needs: str = "",
+    service_window: str = "",
+    location: str = "",
+    details_json: str | dict[str, Any] = "",
+    req_id: str | None = None,
     event_id: str = "evt-dubhacks-2026"
 ) -> dict[str, Any]:
     """Record discovered vendor needs (e.g. food restrictions, badge count, AV equipment) and missing facts."""
@@ -303,8 +789,128 @@ def tool_save_vendor_requirement(
         headcount=headcount,
         budget_allocated=budget_allocated,
         unknowns=unknowns,
-        status=status
+        status=status,
+        dietary_needs=dietary_needs,
+        service_window=service_window,
+        location=location,
+        details_json=details_json,
+        req_id=req_id
     )
+
+
+def tool_save_catering_requirement(
+    event_id: str = "evt-dubhacks-2026",
+    headcount: int = 80,
+    budget: float = 1200.0,
+    dietary_needs: str = "15 vegan, 10 gluten-free, 5 halal, nut-free facility",
+    service_window: str = "11:30 AM - 1:00 PM",
+    location: str = "UW HUB Ballroom Foyer",
+    unknowns: list[str] | str = "Final allergy counts cutoff; loading dock access",
+    specification: str = "",
+    status: str = "quoted",
+    req_id: str | None = None
+) -> dict[str, Any]:
+    """Save or edit catering requirements for a specific event with dietary needs, window, and unknowns."""
+    if not specification:
+        specification = (
+            f"Boxed lunch catering for {headcount} attendees with {dietary_needs}. "
+            f"Service drop-off and staging at {location} for window {service_window}."
+        )
+
+    unknowns_list = []
+    if isinstance(unknowns, (list, tuple)):
+        unknowns_list = [str(x).strip() for x in unknowns if str(x).strip()]
+        unknowns_str = "; ".join(unknowns_list)
+    else:
+        unknowns_str = str(unknowns or "").strip()
+        unknowns_list = [x.strip() for x in unknowns_str.split(";") if x.strip()]
+
+    details_payload = {
+        "headcount": headcount,
+        "budget": budget,
+        "dietary_needs": dietary_needs,
+        "service_window": service_window,
+        "location": location,
+        "unknowns_list": unknowns_list
+    }
+
+    if not req_id:
+        existing_reqs = get_vendor_requirements(event_id)
+        for r in existing_reqs:
+            if "cater" in r.get("category", "").lower() or "food" in r.get("category", "").lower():
+                req_id = r.get("id")
+                break
+
+    saved = save_vendor_requirement(
+        event_id=event_id,
+        category="Catering",
+        specification=specification,
+        headcount=headcount,
+        budget_allocated=budget,
+        unknowns=unknowns_str,
+        status=status,
+        dietary_needs=dietary_needs,
+        service_window=service_window,
+        location=location,
+        details_json=details_payload,
+        req_id=req_id
+    )
+
+    return {
+        "status": "saved",
+        "requirement_id": saved.get("id"),
+        "event_id": event_id,
+        "category": "Catering",
+        "headcount": headcount,
+        "budget_allocated": budget,
+        "dietary_needs": dietary_needs,
+        "service_window": service_window,
+        "location": location,
+        "unknowns": unknowns_list,
+        "specification": specification,
+        "requirement_status": status
+    }
+
+
+def tool_update_vendor_requirement(
+    req_id: str,
+    event_id: str = "evt-dubhacks-2026",
+    category: str | None = None,
+    specification: str | None = None,
+    headcount: int | None = None,
+    budget_allocated: float | None = None,
+    dietary_needs: str | None = None,
+    service_window: str | None = None,
+    location: str | None = None,
+    unknowns: str | list[str] | None = None,
+    status: str | None = None
+) -> dict[str, Any]:
+    """Edit an existing vendor requirement with event isolation."""
+    existing = get_vendor_requirement_by_id(req_id, event_id=event_id)
+    if not existing:
+        raise ValueError(f"Vendor requirement '{req_id}' not found for event '{event_id}'")
+
+    updates = {}
+    if category is not None:
+        updates["category"] = category
+    if specification is not None:
+        updates["specification"] = specification
+    if headcount is not None:
+        updates["headcount"] = headcount
+    if budget_allocated is not None:
+        updates["budget_allocated"] = budget_allocated
+    if dietary_needs is not None:
+        updates["dietary_needs"] = dietary_needs
+    if service_window is not None:
+        updates["service_window"] = service_window
+    if location is not None:
+        updates["location"] = location
+    if unknowns is not None:
+        updates["unknowns"] = unknowns
+    if status is not None:
+        updates["status"] = status
+
+    return update_vendor_requirement(req_id, updates, event_id=event_id)
 
 
 def tool_discover_vendor_needs(event_id: str = "evt-dubhacks-2026", event_type: str = "workshop") -> dict[str, Any]:
@@ -393,10 +999,37 @@ def tool_discover_vendor_needs(event_id: str = "evt-dubhacks-2026", event_type: 
 
 
 def tool_compare_vendor_quotes(category: str = "Catering", event_id: str = "evt-dubhacks-2026") -> dict[str, Any]:
-    """Compare supplier quotes, calculate cost-per-head, evaluate minimums, and test budget feasibility (V2)."""
+    """Compare supplier quotes against current requirements, budget, unknowns, and assumptions (V2)."""
     ev = get_event_brief(event_id)
-    budget = float(ev.get("budget", 2500.0))
-    attendees = int(ev.get("attendee_count", 80))
+
+    # Check for specific vendor requirement in this category first
+    reqs = get_vendor_requirements(event_id)
+    cat_req = None
+    for r in reqs:
+        if category and category.lower() in r.get("category", "").lower():
+            cat_req = r
+            break
+        elif not category and ("cater" in r.get("category", "").lower() or "food" in r.get("category", "").lower()):
+            cat_req = r
+            break
+
+    # Determine baseline facts from requirement or event brief
+    if cat_req:
+        target_headcount = int(cat_req.get("headcount") or ev.get("attendee_count", 80))
+        budget = float(cat_req.get("budget_allocated") or ev.get("budget", 2500.0))
+        target_dietary = cat_req.get("dietary_needs") or ev.get("dietary_specs", "")
+        target_window = cat_req.get("service_window", "")
+        target_location = cat_req.get("location") or ev.get("location", "")
+        req_unknowns = cat_req.get("unknowns", "")
+        req_id = cat_req.get("id")
+    else:
+        target_headcount = int(ev.get("attendee_count", 80))
+        budget = float(ev.get("budget", 2500.0))
+        target_dietary = ev.get("dietary_specs", "")
+        target_window = ""
+        target_location = ev.get("location", "")
+        req_unknowns = ""
+        req_id = None
 
     conn = get_connection()
     c = conn.cursor()
@@ -411,49 +1044,214 @@ def tool_compare_vendor_quotes(category: str = "Catering", event_id: str = "evt-
         return {
             "status": "no_quotes_found",
             "category": category,
-            "message": f"No quotes currently logged under category '{category}' for event '{ev.get('title')}'. Suggest adding quotes via tool_add_vendor_quote."
+            "message": f"No quotes currently logged under category '{category}' for event '{ev.get('title')}'. Suggest adding quotes via tool_add_detailed_vendor_quote."
         }
 
     comparisons = []
-    for v in vendors:
-        quote = float(v.get("quote_amount", 0.0))
-        per_head = float(v.get("price_per_head", 0.0))
-        if per_head <= 0 and attendees > 0:
-            per_head = round(quote / attendees, 2)
 
-        budget_variance = budget - quote
-        is_within_budget = quote <= budget
+    for v in vendors:
+        raw_qd = v.get("quote_data")
+        qd = {}
+        if raw_qd and isinstance(raw_qd, str):
+            try:
+                qd = json.loads(raw_qd)
+            except Exception:
+                qd = {}
+        elif isinstance(raw_qd, dict):
+            qd = raw_qd
+
+        raw_quote = float(v.get("quote_amount", 0.0))
+        raw_price_head = float(v.get("price_per_head", 0.0))
+
+        quantities = qd.get("quantities")
+        if quantities is None or float(quantities) <= 0:
+            quantities = target_headcount if target_headcount > 0 else 80
+
+        unit_price = qd.get("unit_price")
+        if unit_price is None or float(unit_price) <= 0:
+            unit_price = raw_price_head if raw_price_head > 0 else (raw_quote / quantities if quantities else 0.0)
+
+        tax = qd.get("tax")
+        tax_is_unknown = qd.get("tax_is_unknown", (qd.get("tax_status") == "unknown" if "tax_status" in qd else (tax is None)))
+        delivery_fee = qd.get("delivery_fee")
+        delivery_fee_is_unknown = qd.get("delivery_fee_is_unknown", (qd.get("delivery_fee_status") == "unknown" if "delivery_fee_status" in qd else (delivery_fee is None)))
+        other_fees = qd.get("other_fees", 0.0)
+        quoted_hc = qd.get("quoted_headcount", quantities)
+
+        # Run rigorous calculation
+        calc = tool_calculate_quote_cost(
+            quantities=quantities,
+            unit_price=unit_price,
+            tax=tax,
+            tax_is_unknown=tax_is_unknown,
+            delivery_fee=delivery_fee,
+            delivery_fee_is_unknown=delivery_fee_is_unknown,
+            other_fees=other_fees,
+            quoted_headcount=quoted_hc,
+            target_headcount=target_headcount
+        )
+
+        dietary_cov = qd.get("dietary_coverage", [])
+        if not dietary_cov and v.get("details"):
+            dt = v["details"].lower()
+            hints = []
+            if "vegan" in dt: hints.append("vegan")
+            if "gluten-free" in dt or "gf" in dt: hints.append("gluten-free")
+            if "nut-free" in dt: hints.append("nut-free")
+            if "halal" in dt: hints.append("halal")
+            dietary_cov = hints
+
+        diet_eval = check_dietary_coverage(target_dietary, dietary_cov)
+
+        quote_amount = calc["base_cost"]
+        per_head = calc["per_attendee_cost"]
+        budget_variance = round(budget - quote_amount, 2)
+        is_within_budget = quote_amount <= budget
+
+        missing_info = []
+        if calc["has_unknown_fees"]:
+            missing_info.extend([f"Unspecified fee: {f}" for f in calc["unknown_fees"]])
+        if diet_eval["uncovered_tags"]:
+            missing_info.append(f"Unconfirmed dietary accommodations: {', '.join(diet_eval['uncovered_tags'])}")
+        if qd.get("unknown_details"):
+            missing_info.extend(qd["unknown_details"])
+
+        assumptions = list(calc["assumptions"])
+        if target_window:
+            assumptions.append(f"Assumes vendor can service drop-off window: {target_window}.")
+        if target_location:
+            assumptions.append(f"Assumes delivery access to: {target_location}.")
+
+        v_status = v.get("status", "quoted")
 
         comparisons.append({
             "vendor_id": v.get("id"),
             "company_name": v.get("company_name"),
             "category": v.get("category"),
-            "quote_amount": quote,
+            "quote_amount": quote_amount,
+            "cost_classification": calc["cost_classification"],
+            "is_estimate": calc["is_estimate"],
+            "total_label": calc["total_label"],
             "price_per_head": per_head,
+            "price_per_head_label": calc["price_per_head_label"],
             "budget_variance": budget_variance,
             "is_within_budget": is_within_budget,
             "compliance_verified": bool(v.get("compliance_verified")),
-            "details": v.get("details", "")
+            "details": v.get("details", ""),
+            "quantities": calc["quantities"],
+            "unit_price": calc["unit_price"],
+            "subtotal": calc["subtotal"],
+            "tax": calc["tax"],
+            "tax_status": calc["tax_status"],
+            "delivery_fee": calc["delivery_fee"],
+            "delivery_fee_status": calc["delivery_fee_status"],
+            "other_fees": calc["other_fees"],
+            "has_unknown_fees": calc["has_unknown_fees"],
+            "unknown_fees": calc["unknown_fees"],
+            "is_total_definite": calc["is_total_definite"],
+            "quoted_headcount": calc["quoted_headcount"],
+            "target_headcount": target_headcount,
+            "headcount_mismatch": calc["headcount_mismatch"],
+            "is_valid_for_headcount": calc["is_valid_for_headcount"],
+            "headcount_warning": calc["headcount_warning"],
+            "dietary_coverage": diet_eval["vendor_dietary_tags"],
+            "uncovered_dietary_needs": diet_eval["uncovered_tags"],
+            "is_fully_dietary_compliant": diet_eval["is_fully_covered"],
+            "missing_information": missing_info,
+            "assumptions": assumptions,
+            "source": qd.get("source", "organizer-supplied quote"),
+            "status": v_status,
+            "is_selected": v_status == "selected"
         })
 
-    # Sort by quote amount ascending (best value first)
-    comparisons.sort(key=lambda x: x["quote_amount"])
-    best_value = comparisons[0]
+    # Ranking logic:
+    # 1. Headcount valid
+    # 2. Fully dietary compliant
+    # 3. Definite total (no unknown fees)
+    # 4. Within budget
+    # 5. Lowest base cost
+    def sort_score(c):
+        score = 0
+        if not c["is_valid_for_headcount"]:
+            score += 10000  # Penalty for headcount mismatch
+        if not c["is_within_budget"]:
+            score += 5000   # Penalty for over budget
+        if not c["is_fully_dietary_compliant"]:
+            score += 2000 * len(c["uncovered_dietary_needs"])
+        if c["has_unknown_fees"]:
+            score += 1000 * len(c["unknown_fees"])
+        score += c["quote_amount"]
+        return score
+
+    comparisons.sort(key=sort_score)
+    best_candidate = comparisons[0]
+
+    rec_reasons = []
+    if best_candidate["is_valid_for_headcount"]:
+        rec_reasons.append(f"Valid for full attendance of {target_headcount} attendees.")
+    else:
+        rec_reasons.append(f"⚠️ Caution: Quote has headcount mismatch ({best_candidate['quoted_headcount']} vs {target_headcount}).")
+
+    if best_candidate["is_total_definite"]:
+        rec_reasons.append(f"Definite total quote of ${best_candidate['quote_amount']:,.2f} (${best_candidate['price_per_head']:.2f}/head).")
+    else:
+        rec_reasons.append(f"⚠️ Incomplete Quote / Estimate: Total of ${best_candidate['quote_amount']:,.2f} is an incomplete known-cost subtotal estimate and excludes unknown {', '.join(best_candidate['unknown_fees'])}. Never treated as $0.00.")
+
+    if best_candidate["is_within_budget"]:
+        rec_reasons.append(f"Leaves ${best_candidate['budget_variance']:,.2f} margin in the ${budget:,.2f} budget.")
+    else:
+        rec_reasons.append(f"⚠️ Quote exceeds allocated budget by ${abs(best_candidate['budget_variance']):,.2f}.")
+
+    if best_candidate["is_fully_dietary_compliant"]:
+        rec_reasons.append(f"Fully covers required dietary accommodations ({', '.join(best_candidate['dietary_coverage'])}).")
+    elif best_candidate["uncovered_dietary_needs"]:
+        rec_reasons.append(f"Note: Unconfirmed accommodations for {', '.join(best_candidate['uncovered_dietary_needs'])}.")
+
+    recommendation_reason = " ".join(rec_reasons)
 
     return {
+        "status": "success",
         "event_id": event_id,
         "event_title": ev.get("title"),
         "category": category,
         "event_budget": budget,
-        "attendee_count": attendees,
+        "attendee_count": target_headcount,
+        "catering_requirement": {
+            "requirement_id": req_id,
+            "headcount": target_headcount,
+            "budget": budget,
+            "dietary_needs": target_dietary,
+            "service_window": target_window,
+            "location": target_location,
+            "unknowns": req_unknowns
+        },
         "quotes_evaluated": len(comparisons),
         "comparison_matrix": comparisons,
-        "recommended_vendor": best_value["company_name"],
-        "recommendation_reason": (
-            f"Lowest total quote (${best_value['quote_amount']:,.2f} at ${best_value['price_per_head']:.2f}/head). "
-            f"Leaves ${best_value['budget_variance']:,.2f} margin in the event budget."
-        )
+        "recommended_vendor": best_candidate["company_name"],
+        "recommended_vendor_id": best_candidate["vendor_id"],
+        "recommendation_reason": recommendation_reason,
+        "missing_information_summary": {
+            c["company_name"]: c["missing_information"] for c in comparisons if c["missing_information"]
+        },
+        "assumptions_summary": {
+            c["company_name"]: c["assumptions"] for c in comparisons
+        }
     }
+
+
+def tool_select_vendor_proposal(
+    vendor_id: str,
+    event_id: str = "evt-dubhacks-2026",
+    selection_notes: str = "",
+    actor_id: str = "organizer"
+) -> dict[str, Any]:
+    """Allow the organizer to select a preferred vendor proposal without treating selection as a booking or purchase."""
+    return record_vendor_selection(
+        vendor_id=vendor_id,
+        event_id=event_id,
+        selection_notes=selection_notes,
+        actor_id=actor_id
+    )
 
 
 def tool_verify_vendor_compliance(

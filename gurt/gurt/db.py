@@ -217,6 +217,14 @@ def init_db() -> None:
     _ensure_column(cursor, "vendors", "event_id TEXT DEFAULT 'evt-dubhacks-2026'")
     _ensure_column(cursor, "vendors", "compliance_verified INTEGER DEFAULT 0")
     _ensure_column(cursor, "vendors", "compliance_notes TEXT DEFAULT ''")
+    _ensure_column(cursor, "vendors", "quote_data TEXT DEFAULT '{}'")
+    _ensure_column(cursor, "vendors", "selected_at TEXT DEFAULT ''")
+    _ensure_column(cursor, "vendors", "selection_notes TEXT DEFAULT ''")
+    _ensure_column(cursor, "vendor_requirements", "dietary_needs TEXT DEFAULT ''")
+    _ensure_column(cursor, "vendor_requirements", "service_window TEXT DEFAULT ''")
+    _ensure_column(cursor, "vendor_requirements", "location TEXT DEFAULT ''")
+    _ensure_column(cursor, "vendor_requirements", "details_json TEXT DEFAULT '{}'")
+    _ensure_column(cursor, "vendor_requirements", "updated_at TEXT DEFAULT ''")
     _ensure_column(cursor, "sponsors", "event_id TEXT DEFAULT 'evt-dubhacks-2026'")
     _ensure_column(cursor, "tasks", "event_id TEXT DEFAULT 'evt-dubhacks-2026'")
     _ensure_column(cursor, "action_proposals", "event_id TEXT DEFAULT 'evt-dubhacks-2026'")
@@ -630,13 +638,228 @@ def update_speaker_or_sponsor_status(
     return dict(row or {})
 
 
+def get_vendor_by_id(vendor_id: str, event_id: str | None = None) -> dict[str, Any] | None:
+    """Retrieve a single vendor by ID, optionally isolated to an event_id."""
+    conn = get_connection()
+    c = conn.cursor()
+    if event_id:
+        c.execute("SELECT * FROM vendors WHERE id = ? AND event_id = ?", (vendor_id, event_id))
+    else:
+        c.execute("SELECT * FROM vendors WHERE id = ?", (vendor_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    res = dict(row)
+    raw_quote = res.get("quote_data")
+    if raw_quote and isinstance(raw_quote, str):
+        try:
+            res["quote_data"] = json.loads(raw_quote)
+        except Exception:
+            res["quote_data"] = {}
+    elif not raw_quote or not isinstance(raw_quote, dict):
+        res["quote_data"] = {}
+    return res
+
+
+def update_vendor(vendor_id: str, updates: dict[str, Any], event_id: str | None = None) -> dict[str, Any]:
+    """Update fields on an existing vendor with event isolation."""
+    existing = get_vendor_by_id(vendor_id, event_id=event_id)
+    if not existing:
+        raise ValueError(f"Vendor '{vendor_id}' not found" + (f" for event '{event_id}'" if event_id else ""))
+
+    allowed_fields = [
+        "category", "company_name", "quote_amount", "price_per_head",
+        "status", "contact_email", "details", "compliance_verified",
+        "compliance_notes", "quote_data", "selected_at", "selection_notes"
+    ]
+    set_clauses = []
+    values = []
+    for k, v in updates.items():
+        if k in allowed_fields:
+            if k == "quote_data" and isinstance(v, (dict, list)):
+                v = json.dumps(v)
+            elif k == "compliance_verified" and isinstance(v, bool):
+                v = 1 if v else 0
+            elif k in ("quote_amount", "price_per_head") and v is not None:
+                v = float(v)
+            set_clauses.append(f"{k} = ?")
+            values.append(v)
+
+    if set_clauses:
+        conn = get_connection()
+        c = conn.cursor()
+        values.append(vendor_id)
+        if event_id:
+            values.append(event_id)
+            c.execute(f"UPDATE vendors SET {', '.join(set_clauses)} WHERE id = ? AND event_id = ?", values)
+        else:
+            c.execute(f"UPDATE vendors SET {', '.join(set_clauses)} WHERE id = ?", values)
+        conn.commit()
+        conn.close()
+
+    updated = get_vendor_by_id(vendor_id, event_id=event_id)
+    return updated or {}
+
+
+def record_vendor_selection(
+    vendor_id: str,
+    event_id: str = "evt-dubhacks-2026",
+    selection_notes: str = "",
+    actor_id: str = "organizer"
+) -> dict[str, Any]:
+    """Select preferred vendor proposal without booking, purchasing, or contract commitment."""
+    vendor = get_vendor_by_id(vendor_id, event_id=event_id)
+    if not vendor:
+        raise ValueError(f"Vendor '{vendor_id}' not found for event '{event_id}'")
+
+    now = datetime.now().isoformat()
+    update_vendor(vendor_id, {
+        "status": "selected",
+        "selected_at": now,
+        "selection_notes": selection_notes
+    }, event_id=event_id)
+
+    # Immutable audit trail
+    audit_details = {
+        "vendor_id": vendor_id,
+        "company_name": vendor.get("company_name"),
+        "category": vendor.get("category"),
+        "quote_amount": vendor.get("quote_amount"),
+        "selection_notes": selection_notes,
+        "is_booked": False,
+        "is_confirmed": False,
+        "is_actual_purchase": False,
+        "is_purchase": False,
+        "requires_manual_booking": True,
+        "notice": "Selected as preferred proposal only. NOT booked, purchased, or confirmed."
+    }
+    log_audit_event(
+        event_id=event_id,
+        actor_id=actor_id,
+        action="select_preferred_vendor",
+        target_type="vendor",
+        target_id=vendor_id,
+        details=audit_details
+    )
+
+    return {
+        "status": "selected",
+        "vendor_id": vendor_id,
+        "company_name": vendor.get("company_name"),
+        "event_id": event_id,
+        "quote_status": "selected",
+        "selected_at": now,
+        "selection_notes": selection_notes,
+        "is_preferred": True,
+        "is_booked": False,
+        "is_confirmed": False,
+        "is_actual_purchase": False,
+        "is_purchase": False,
+        "requires_manual_booking": True,
+        "booking_disclaimer": (
+            "Vendor proposal selected as preferred proposal. This action DOES NOT book, confirm, purchase, "
+            "or sign any binding agreement with the vendor. The organizer must manually contact the vendor to "
+            "negotiate, execute a contract, and arrange payment."
+        ),
+        "next_steps": [
+            "Contact vendor representative to request formal catering agreement.",
+            "Confirm loading dock clearance and access times with venue.",
+            "Verify final guest dietary restrictions 5 days prior to the event.",
+            "Process formal purchase order or payment through institutional finance."
+        ]
+    }
+
+
 def get_vendor_requirements(event_id: str = "evt-dubhacks-2026") -> list[dict[str, Any]]:
+    """Retrieve all vendor requirements for an event, with parsed details_json."""
     conn = get_connection()
     c = conn.cursor()
     c.execute("SELECT * FROM vendor_requirements WHERE event_id = ? ORDER BY created_at DESC", (event_id,))
-    rows = [dict(r) for r in c.fetchall()]
+    rows = []
+    for r in c.fetchall():
+        d = dict(r)
+        raw_details = d.get("details_json")
+        if raw_details and isinstance(raw_details, str):
+            try:
+                d["details_json"] = json.loads(raw_details)
+            except Exception:
+                d["details_json"] = {}
+        elif not raw_details or not isinstance(raw_details, dict):
+            d["details_json"] = {}
+        rows.append(d)
     conn.close()
     return rows
+
+
+def get_vendor_requirement_by_id(req_id: str, event_id: str | None = None) -> dict[str, Any] | None:
+    """Retrieve a single vendor requirement by ID, optionally isolated to an event_id."""
+    conn = get_connection()
+    c = conn.cursor()
+    if event_id:
+        c.execute("SELECT * FROM vendor_requirements WHERE id = ? AND event_id = ?", (req_id, event_id))
+    else:
+        c.execute("SELECT * FROM vendor_requirements WHERE id = ?", (req_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    d = dict(row)
+    raw_details = d.get("details_json")
+    if raw_details and isinstance(raw_details, str):
+        try:
+            d["details_json"] = json.loads(raw_details)
+        except Exception:
+            d["details_json"] = {}
+    elif not raw_details or not isinstance(raw_details, dict):
+        d["details_json"] = {}
+    return d
+
+
+def update_vendor_requirement(req_id: str, updates: dict[str, Any], event_id: str | None = None) -> dict[str, Any]:
+    """Update fields on an existing vendor requirement with event isolation."""
+    existing = get_vendor_requirement_by_id(req_id, event_id=event_id)
+    if not existing:
+        raise ValueError(f"Vendor requirement '{req_id}' not found" + (f" for event '{event_id}'" if event_id else ""))
+
+    allowed_fields = [
+        "category", "specification", "headcount", "budget_allocated",
+        "status", "unknowns", "dietary_needs", "service_window",
+        "location", "details_json", "updated_at"
+    ]
+    set_clauses = []
+    values = []
+    for k, v in updates.items():
+        if k in allowed_fields:
+            if k == "details_json" and isinstance(v, (dict, list)):
+                v = json.dumps(v)
+            elif k == "unknowns" and isinstance(v, (list, tuple)):
+                v = "; ".join(str(item) for item in v)
+            elif k in ("headcount",) and v is not None:
+                v = int(v)
+            elif k in ("budget_allocated",) and v is not None:
+                v = float(v)
+            set_clauses.append(f"{k} = ?")
+            values.append(v)
+
+    if "updated_at" not in updates:
+        set_clauses.append("updated_at = ?")
+        values.append(datetime.now().isoformat())
+
+    if set_clauses:
+        conn = get_connection()
+        c = conn.cursor()
+        values.append(req_id)
+        if event_id:
+            values.append(event_id)
+            c.execute(f"UPDATE vendor_requirements SET {', '.join(set_clauses)} WHERE id = ? AND event_id = ?", values)
+        else:
+            c.execute(f"UPDATE vendor_requirements SET {', '.join(set_clauses)} WHERE id = ?", values)
+        conn.commit()
+        conn.close()
+
+    updated = get_vendor_requirement_by_id(req_id, event_id=event_id)
+    return updated or {}
 
 
 def save_vendor_requirement(
@@ -645,26 +868,67 @@ def save_vendor_requirement(
     specification: str,
     headcount: int = 80,
     budget_allocated: float = 0.0,
-    unknowns: str = "",
-    status: str = "quoted"
+    unknowns: str | list[str] = "",
+    status: str = "quoted",
+    dietary_needs: str = "",
+    service_window: str = "",
+    location: str = "",
+    details_json: str | dict[str, Any] = "",
+    req_id: str | None = None
 ) -> dict[str, Any]:
-    req_id = f"vrq-{uuid.uuid4().hex[:6]}"
+    """Insert or update a vendor requirement."""
+    if req_id:
+        existing = get_vendor_requirement_by_id(req_id, event_id=event_id)
+        if existing:
+            updates = {
+                "category": category,
+                "specification": specification,
+                "headcount": headcount,
+                "budget_allocated": budget_allocated,
+                "unknowns": unknowns,
+                "status": status,
+                "dietary_needs": dietary_needs,
+                "service_window": service_window,
+                "location": location,
+                "details_json": details_json
+            }
+            return update_vendor_requirement(req_id, updates, event_id=event_id)
+
+    new_id = f"vrq-{uuid.uuid4().hex[:6]}"
+    if isinstance(unknowns, (list, tuple)):
+        unknowns_str = "; ".join(str(x) for x in unknowns)
+    else:
+        unknowns_str = str(unknowns or "")
+
+    if isinstance(details_json, (dict, list)):
+        details_str = json.dumps(details_json)
+    else:
+        details_str = str(details_json or "{}")
+
+    now = datetime.now().isoformat()
     conn = get_connection()
     c = conn.cursor()
     c.execute("""
-        INSERT INTO vendor_requirements (id, event_id, category, specification, headcount, budget_allocated, status, unknowns)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (req_id, event_id, category, specification, headcount, float(budget_allocated), status, unknowns))
+        INSERT INTO vendor_requirements (
+            id, event_id, category, specification, headcount, budget_allocated, status, unknowns,
+            dietary_needs, service_window, location, details_json, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        new_id, event_id, category, specification, headcount, float(budget_allocated), status, unknowns_str,
+        dietary_needs, service_window, location, details_str, now, now
+    ))
     conn.commit()
     conn.close()
-    return {
-        "id": req_id,
+    created = get_vendor_requirement_by_id(new_id, event_id=event_id)
+    return created or {
+        "id": new_id,
         "event_id": event_id,
         "category": category,
         "specification": specification,
         "headcount": headcount,
         "budget_allocated": budget_allocated,
-        "unknowns": unknowns,
+        "unknowns": unknowns_str,
         "status": status
     }
 
@@ -1195,6 +1459,10 @@ def get_audit_logs(event_id: str = "evt-dubhacks-2026", limit: int = 50) -> list
         results.append(d)
     conn.close()
     return results
+
+
+# Backward-compatible alias
+record_audit_log = log_audit_event
 
 
 def get_tasks(event_id: str = "evt-dubhacks-2026") -> list[dict[str, Any]]:

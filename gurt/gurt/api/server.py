@@ -27,6 +27,11 @@ from gurt.db import (
     list_all_events,
     get_vendor_requirements,
     save_vendor_requirement,
+    get_vendor_requirement_by_id,
+    update_vendor_requirement,
+    get_vendor_by_id,
+    update_vendor,
+    record_vendor_selection,
     get_schedule_items,
     get_pdf_documents,
     get_conversations,
@@ -44,7 +49,15 @@ from gurt.tools.outreach_tools import execute_approved_action, dismiss_action, t
 from gurt.tools.event_tools import (
     tool_create_task,
     tool_update_task_status,
+    tool_lookup_vendors,
     tool_add_vendor_quote,
+    tool_add_detailed_vendor_quote,
+    tool_update_vendor_quote,
+    tool_compare_vendor_quotes,
+    tool_select_vendor_proposal,
+    tool_save_catering_requirement,
+    tool_update_vendor_requirement,
+    tool_calculate_quote_cost,
     tool_generate_schedule,
     tool_lookup_schedule
 )
@@ -124,12 +137,70 @@ class StatusUpdateRequest(BaseModel):
 
 class VendorRequest(BaseModel):
     company_name: str
-    category: str
-    quote_amount: float
+    category: str = "Catering"
+    quote_amount: float = 0.0
     price_per_head: float = 0.0
     details: str = ""
     contact_email: str = ""
     event_id: str = "evt-dubhacks-2026"
+    quantities: float | None = None
+    unit_price: float | None = None
+    tax: float | None = None
+    tax_is_unknown: bool = False
+    delivery_fee: float | None = None
+    delivery_fee_is_unknown: bool = False
+    other_fees: float = 0.0
+    dietary_coverage: list[str] | str | None = None
+    source: str = "organizer-supplied quote"
+    quote_status: str = "quoted"
+    quoted_headcount: int | None = None
+    unknown_details: list[str] | str | None = None
+
+
+class DetailedVendorQuoteRequest(BaseModel):
+    company_name: str
+    category: str = "Catering"
+    quantities: float = 80
+    unit_price: float = 0.0
+    tax: float | None = None
+    tax_is_unknown: bool = False
+    delivery_fee: float | None = None
+    delivery_fee_is_unknown: bool = False
+    other_fees: float = 0.0
+    dietary_coverage: list[str] | str | None = None
+    source: str = "organizer-supplied quote"
+    quote_status: str = "quoted"
+    contact_email: str = ""
+    details: str = ""
+    quoted_headcount: int | None = None
+    unknown_details: list[str] | str | None = None
+    event_id: str = "evt-dubhacks-2026"
+
+
+class VendorQuoteUpdateRequest(BaseModel):
+    company_name: str | None = None
+    category: str | None = None
+    quantities: float | None = None
+    unit_price: float | None = None
+    tax: float | None = None
+    tax_is_unknown: bool | None = None
+    delivery_fee: float | None = None
+    delivery_fee_is_unknown: bool | None = None
+    other_fees: float | None = None
+    dietary_coverage: list[str] | str | None = None
+    source: str | None = None
+    quote_status: str | None = None
+    contact_email: str | None = None
+    details: str | None = None
+    quoted_headcount: int | None = None
+    unknown_details: list[str] | str | None = None
+    event_id: str = "evt-dubhacks-2026"
+
+
+class VendorSelectionRequest(BaseModel):
+    event_id: str = "evt-dubhacks-2026"
+    selection_notes: str = ""
+    actor_id: str = "organizer"
 
 
 class VendorRequirementRequest(BaseModel):
@@ -137,9 +208,40 @@ class VendorRequirementRequest(BaseModel):
     specification: str
     headcount: int = 80
     budget_allocated: float = 0.0
-    unknowns: str = ""
+    unknowns: str | list[str] = ""
     status: str = "quoted"
+    dietary_needs: str = ""
+    service_window: str = ""
+    location: str = ""
+    details_json: str | dict[str, Any] = ""
+    req_id: str | None = None
     event_id: str = "evt-dubhacks-2026"
+
+
+class VendorRequirementUpdateRequest(BaseModel):
+    category: str | None = None
+    specification: str | None = None
+    headcount: int | None = None
+    budget_allocated: float | None = None
+    dietary_needs: str | None = None
+    service_window: str | None = None
+    location: str | None = None
+    unknowns: str | list[str] | None = None
+    status: str | None = None
+    event_id: str = "evt-dubhacks-2026"
+
+
+class CateringRequirementRequest(BaseModel):
+    event_id: str = "evt-dubhacks-2026"
+    headcount: int = 80
+    budget: float = 1200.0
+    dietary_needs: str = "15 vegan, 10 gluten-free, 5 halal, nut-free facility"
+    service_window: str = "11:30 AM - 1:00 PM"
+    location: str = "UW HUB Ballroom Foyer"
+    unknowns: list[str] | str = "Final count cutoff date; loading dock clearance"
+    specification: str = ""
+    status: str = "quoted"
+    req_id: str | None = None
 
 
 class BriefUpdateRequest(BaseModel):
@@ -384,6 +486,30 @@ def create_task_endpoint(req: TaskRequest) -> dict[str, Any]:
     )
 
 
+@app.get("/api/vendors")
+def list_vendors_endpoint(
+    category: str = Query("", description="Optional category filter"),
+    event_id: str = Query("evt-dubhacks-2026")
+) -> list[dict[str, Any]]:
+    return tool_lookup_vendors(category=category, event_id=event_id)
+
+
+@app.get("/api/vendors/compare")
+def compare_vendors_endpoint(
+    category: str = Query("Catering"),
+    event_id: str = Query("evt-dubhacks-2026")
+) -> dict[str, Any]:
+    return tool_compare_vendor_quotes(category=category, event_id=event_id)
+
+
+@app.get("/api/vendors/{vendor_id}")
+def get_vendor_endpoint(vendor_id: str, event_id: str = Query("evt-dubhacks-2026")) -> dict[str, Any]:
+    vendor = get_vendor_by_id(vendor_id, event_id=event_id)
+    if not vendor:
+        raise HTTPException(status_code=404, detail=f"Vendor '{vendor_id}' not found for event '{event_id}'")
+    return vendor
+
+
 @app.post("/api/vendors")
 def create_vendor_endpoint(req: VendorRequest) -> dict[str, Any]:
     return tool_add_vendor_quote(
@@ -393,13 +519,91 @@ def create_vendor_endpoint(req: VendorRequest) -> dict[str, Any]:
         price_per_head=req.price_per_head,
         details=req.details,
         contact_email=req.contact_email,
-        event_id=req.event_id
+        event_id=req.event_id,
+        quantities=req.quantities,
+        unit_price=req.unit_price,
+        tax=req.tax,
+        tax_is_unknown=req.tax_is_unknown,
+        delivery_fee=req.delivery_fee,
+        delivery_fee_is_unknown=req.delivery_fee_is_unknown,
+        other_fees=req.other_fees,
+        dietary_coverage=req.dietary_coverage,
+        source=req.source,
+        quote_status=req.quote_status,
+        quoted_headcount=req.quoted_headcount,
+        unknown_details=req.unknown_details
     )
+
+
+@app.patch("/api/vendors/{vendor_id}")
+@app.put("/api/vendors/{vendor_id}")
+def update_vendor_endpoint(vendor_id: str, req: VendorQuoteUpdateRequest) -> dict[str, Any]:
+    try:
+        return tool_update_vendor_quote(
+            vendor_id=vendor_id,
+            event_id=req.event_id,
+            company_name=req.company_name,
+            category=req.category,
+            quantities=req.quantities,
+            unit_price=req.unit_price,
+            tax=req.tax,
+            tax_is_unknown=req.tax_is_unknown,
+            delivery_fee=req.delivery_fee,
+            delivery_fee_is_unknown=req.delivery_fee_is_unknown,
+            other_fees=req.other_fees,
+            dietary_coverage=req.dietary_coverage,
+            source=req.source,
+            quote_status=req.quote_status,
+            contact_email=req.contact_email,
+            details=req.details,
+            quoted_headcount=req.quoted_headcount,
+            unknown_details=req.unknown_details
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/vendors/{vendor_id}/select")
+def select_vendor_proposal_endpoint(vendor_id: str, req: VendorSelectionRequest) -> dict[str, Any]:
+    try:
+        return tool_select_vendor_proposal(
+            vendor_id=vendor_id,
+            event_id=req.event_id,
+            selection_notes=req.selection_notes,
+            actor_id=req.actor_id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.get("/api/vendor-requirements")
 def get_vendor_requirements_endpoint(event_id: str = Query("evt-dubhacks-2026")) -> list[dict[str, Any]]:
     return get_vendor_requirements(event_id)
+
+
+@app.get("/api/vendor-requirements/catering")
+def get_catering_requirement_endpoint(event_id: str = Query("evt-dubhacks-2026")) -> dict[str, Any]:
+    reqs = get_vendor_requirements(event_id)
+    for r in reqs:
+        if "cater" in r.get("category", "").lower() or "food" in r.get("category", "").lower():
+            return r
+    raise HTTPException(status_code=404, detail=f"No catering requirement found for event '{event_id}'")
+
+
+@app.post("/api/vendor-requirements/catering")
+def save_catering_requirement_endpoint(req: CateringRequirementRequest) -> dict[str, Any]:
+    return tool_save_catering_requirement(
+        event_id=req.event_id,
+        headcount=req.headcount,
+        budget=req.budget,
+        dietary_needs=req.dietary_needs,
+        service_window=req.service_window,
+        location=req.location,
+        unknowns=req.unknowns,
+        specification=req.specification,
+        status=req.status,
+        req_id=req.req_id
+    )
 
 
 @app.post("/api/vendor-requirements")
@@ -411,8 +615,41 @@ def create_vendor_requirement_endpoint(req: VendorRequirementRequest) -> dict[st
         headcount=req.headcount,
         budget_allocated=req.budget_allocated,
         unknowns=req.unknowns,
-        status=req.status
+        status=req.status,
+        dietary_needs=req.dietary_needs,
+        service_window=req.service_window,
+        location=req.location,
+        details_json=req.details_json,
+        req_id=req.req_id
     )
+
+
+@app.get("/api/vendor-requirements/{req_id}")
+def get_vendor_requirement_endpoint(req_id: str, event_id: str = Query("evt-dubhacks-2026")) -> dict[str, Any]:
+    requirement = get_vendor_requirement_by_id(req_id, event_id=event_id)
+    if not requirement:
+        raise HTTPException(status_code=404, detail=f"Vendor requirement '{req_id}' not found for event '{event_id}'")
+    return requirement
+
+
+@app.put("/api/vendor-requirements/{req_id}")
+def update_vendor_requirement_endpoint(req_id: str, req: VendorRequirementUpdateRequest) -> dict[str, Any]:
+    try:
+        return tool_update_vendor_requirement(
+            req_id=req_id,
+            event_id=req.event_id,
+            category=req.category,
+            specification=req.specification,
+            headcount=req.headcount,
+            budget_allocated=req.budget_allocated,
+            dietary_needs=req.dietary_needs,
+            service_window=req.service_window,
+            location=req.location,
+            unknowns=req.unknowns,
+            status=req.status
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @app.get("/api/schedule")
