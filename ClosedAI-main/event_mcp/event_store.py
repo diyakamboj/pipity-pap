@@ -122,10 +122,14 @@ class OperationalTask:
     depends_on: list[str] = field(default_factory=list)
     notes: str = ""
     category: str = "general"
-    confirmation_state: str = ConfirmationState.CONFIRMED.value
+    confirmation_state: str = ConfirmationState.TENTATIVE.value
+    session_id: Optional[str] = None
+    confirmation_requirement: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        res = asdict(self)
+        res["due"] = self.due_date
+        return res
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> OperationalTask:
@@ -134,11 +138,13 @@ class OperationalTask:
             title=data.get("title", ""),
             owner=data.get("owner", ""),
             status=data.get("status", "open"),
-            due_date=data.get("due_date", ""),
+            due_date=data.get("due_date", "") or data.get("due", ""),
             depends_on=list(data.get("depends_on", [])),
             notes=data.get("notes", ""),
             category=data.get("category", "general"),
-            confirmation_state=data.get("confirmation_state", ConfirmationState.CONFIRMED.value),
+            confirmation_state=data.get("confirmation_state", ConfirmationState.TENTATIVE.value),
+            session_id=data.get("session_id"),
+            confirmation_requirement=data.get("confirmation_requirement"),
         )
 
 
@@ -465,6 +471,29 @@ class EventStore:
                     self.save()
                     return copy.deepcopy(t)
         return None
+
+    def upsert_tasks(self, tasks: list[dict[str, Any] | OperationalTask]) -> list[dict[str, Any]]:
+        """Idempotently insert new tasks and update matching non-conflicting tasks without clobbering edits."""
+        with self._lock:
+            existing_by_id = {t["id"]: t for t in self._data["tasks"]}
+            persisted: list[dict[str, Any]] = []
+            for t in tasks:
+                t_dict = t.to_dict() if isinstance(t, OperationalTask) else copy.deepcopy(t)
+                t_id = t_dict["id"]
+                if t_id in existing_by_id:
+                    target = existing_by_id[t_id]
+                    # Preserve user status if already changed from open
+                    user_status = target.get("status", "open")
+                    target.update({k: v for k, v in t_dict.items() if k != "status"})
+                    if user_status in ("done", "in_progress", "blocked"):
+                        target["status"] = user_status
+                    persisted.append(copy.deepcopy(target))
+                else:
+                    self._data["tasks"].append(t_dict)
+                    existing_by_id[t_id] = t_dict
+                    persisted.append(copy.deepcopy(t_dict))
+            self.save()
+            return persisted
 
     # -----------------------------------------------------------------------
     # Schedule Items (Day-of Run-of-Show)

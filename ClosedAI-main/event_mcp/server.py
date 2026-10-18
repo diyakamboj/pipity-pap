@@ -29,6 +29,11 @@ from fastmcp import FastMCP
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from event_store import EventStore, get_event_store  # noqa: E402
+from logistics_engine import (  # noqa: E402
+    build_run_of_show,
+    generate_operational_tasks,
+    get_task_board,
+)
 from seed_data import (  # noqa: E402
     BRIEFINGS,
     EVENT,
@@ -247,6 +252,54 @@ def task_list(filter_owner: str = "", filter_status: str = "") -> dict[str, Any]
         "total": len(tasks),
         "_canvas": {"module": "task_board", "title": "Logistics Task Board"},
     }
+
+
+@mcp.tool
+def logistics_run_of_show() -> dict[str, Any]:
+    """Generate or retrieve the chronological day-of run-of-show timeline for the event.
+
+    Returns the complete day-of agenda from setup to teardown, including session times,
+    rooms, linked speakers/vendors, confirmation states (confirmed, tentative, assumed, proposed),
+    dependencies, and missing information needing organizer confirmation.
+
+    Read-only. Use to review day-of timing, check gaps, and present the timeline on Canvas.
+    """
+    return build_run_of_show(BACKEND.store)
+
+
+@mcp.tool
+def logistics_generate_tasks() -> dict[str, Any]:
+    """Generate a preview of the proposed operational task plan for event logistics.
+
+    Strictly read-only and preview-only. This tool NEVER persists tasks to the
+    event store, regardless of arguments. It returns proposed tasks with owners,
+    deadlines, dependencies, critical path analysis, and underlying confirmation
+    requirements for organizer review on Canvas.
+
+    Persisting tasks is an internal backend operation reserved for future
+    human-in-the-loop approval actions.
+    """
+    return generate_operational_tasks(BACKEND.store)
+
+
+@mcp.tool
+def logistics_task_board(
+    filter_category: str = "", filter_owner: str = "", filter_status: str = ""
+) -> dict[str, Any]:
+    """Retrieve the active logistics task board grouped by category and owner.
+
+    Optionally filter by category ('logistics', 'catering', 'speakers', 'venue', 'sponsors'),
+    owner ('Diya', 'Gurt', 'Team'), or status ('open', 'done', 'in_progress').
+    Pass empty strings to return all tasks with full category summaries.
+
+    Read-only. Use to inspect operational progress and render the task board on Canvas.
+    """
+    return get_task_board(
+        BACKEND.store,
+        filter_category=filter_category,
+        filter_owner=filter_owner,
+        filter_status=filter_status,
+    )
 
 
 if __name__ == "__main__":
