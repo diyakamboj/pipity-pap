@@ -43,6 +43,7 @@ from approval_engine import (
     ConfirmedCommitmentError,
     ConflictingProposalError,
     DuplicateProposalError,
+    EventMembershipApprovalAdapter,
     InternalTestApprovalAdapter,
     InvalidProposalError,
     InvalidProposalStateError,
@@ -52,8 +53,10 @@ from approval_engine import (
     ScheduleItemNotFoundError,
     StaleProposalError,
     TamperedProposalError,
+    TrustedIdentityVerifier,
     UnauthorizedApprovalError,
     UntrustedApprovalContextError,
+    VerifiedIdentity,
     apply_approved_proposal_by_id,
     apply_approved_schedule_change,
     apply_rejected_proposal_by_id,
@@ -69,7 +72,15 @@ from approval_engine import (
     reject_proposal,
 )
 from conflict_engine import ConflictType, detect_schedule_conflicts, propose_conflict_resolutions
-from event_store import ConfirmationState, EventStore, ProposalRecord, ProposalStatus
+from event_store import (
+    ConfirmationState,
+    EventStore,
+    MemberStatus,
+    OrganizerMember,
+    OrganizerRole,
+    ProposalRecord,
+    ProposalStatus,
+)
 import server
 
 
@@ -980,7 +991,7 @@ def test_concurrent_proposal_approval_across_processes(tmp_path):
     prop_id = created["proposal_id"]
 
     context_dict = {
-        "actor_id": "usr-lead-diya",
+        "actor_id": "usr-diya-001",
         "actor_name": "Diya",
         "actor_role": "lead_organizer",
         "session_id": "sess-concurrent",
@@ -1431,3 +1442,605 @@ def test_omitted_conflict_id_cannot_bypass_l3_verification(isolated_store):
     with pytest.raises(TamperedProposalError) as exc_info:
         create_trusted_proposal(isolated_store, tampered_cand_no_conflict_id)
     assert "do not match deterministic L3 resolution options" in str(exc_info.value)
+
+
+# ===========================================================================
+# 29. Phase 5B.3: Event-Scoped Organizer Membership & Authorization Tests
+# ===========================================================================
+def test_membership_authorization_non_member_rejected(isolated_store):
+    """Actors without authoritative event organizer records are rejected."""
+    candidate = {
+        "target_schedule_id": "sch-001",
+        "title": "Breakfast Shift",
+        "strategy": "RESCHEDULE_SESSION",
+        "proposed_changes": [
+            {"record_id": "sch-001", "field": "start_time", "before": "08:00", "after": "08:15"},
+            {"record_id": "sch-001", "field": "end_time", "before": "09:00", "after": "09:15"},
+        ],
+    }
+    created = create_trusted_proposal(isolated_store, candidate)
+    prop_id = created["proposal_id"]
+
+    non_member_ctx = ApprovalContext(
+        actor_id="usr-unknown-999",
+        actor_name="Unknown Person",
+        actor_role="organizer",
+    )
+
+    # 1. Proposal execution rejected for non-member
+    with pytest.raises(UnauthorizedApprovalError) as exc_exec:
+        execute_approved_proposal_by_id(isolated_store, prop_id, non_member_ctx)
+    assert "has no organizer membership for event 'evt-001'" in str(exc_exec.value)
+
+    # 2. Proposal rejection rejected for non-member
+    with pytest.raises(UnauthorizedApprovalError) as exc_rej:
+        reject_proposal(isolated_store, prop_id, non_member_ctx, reason="Rogue rejection")
+    assert "has no organizer membership for event 'evt-001'" in str(exc_rej.value)
+
+    # 3. Direct schedule change transaction rejected for non-member
+    tx_proposal = dict(candidate, proposal_id=prop_id)
+    with pytest.raises(UnauthorizedApprovalError) as exc_tx:
+        execute_approved_schedule_change_transaction(isolated_store, tx_proposal, non_member_ctx)
+    assert "has no organizer membership for event 'evt-001'" in str(exc_tx.value)
+
+
+def test_membership_authorization_inactive_member_rejected(isolated_store):
+    """Inactive organizer members are rejected from approving or rejecting proposals."""
+    candidate = {
+        "target_schedule_id": "sch-001",
+        "title": "Breakfast Shift",
+        "strategy": "RESCHEDULE_SESSION",
+        "proposed_changes": [
+            {"record_id": "sch-001", "field": "start_time", "before": "08:00", "after": "08:15"},
+            {"record_id": "sch-001", "field": "end_time", "before": "09:00", "after": "09:15"},
+        ],
+    }
+    created = create_trusted_proposal(isolated_store, candidate)
+    prop_id = created["proposal_id"]
+
+    # usr-inactive-003 is seeded with status="inactive"
+    inactive_ctx = ApprovalContext(
+        actor_id="usr-inactive-003",
+        actor_name="Inactive Volunteer",
+        actor_role="organizer",
+    )
+
+    # 1. Approval rejected
+    with pytest.raises(UnauthorizedApprovalError) as exc_exec:
+        execute_approved_proposal_by_id(isolated_store, prop_id, inactive_ctx)
+    assert "is an inactive organizer for event 'evt-001'" in str(exc_exec.value)
+
+    # 2. Rejection rejected
+    with pytest.raises(UnauthorizedApprovalError) as exc_rej:
+        reject_proposal(isolated_store, prop_id, inactive_ctx, reason="Inactive attempt")
+    assert "is an inactive organizer for event 'evt-001'" in str(exc_rej.value)
+
+    # 3. Dynamic deactivation: active organizer usr-org-002 deactivated under lock
+    isolated_store.update_organizer("usr-org-002", {"status": "inactive"})
+    active_ctx = ApprovalContext(
+        actor_id="usr-org-002",
+        actor_name="Alex Organizer",
+        actor_role="organizer",
+    )
+    with pytest.raises(UnauthorizedApprovalError) as exc_dyn:
+        execute_approved_proposal_by_id(isolated_store, prop_id, active_ctx)
+    assert "is an inactive organizer for event 'evt-001'" in str(exc_dyn.value)
+
+
+def test_cross_event_access_rejection(isolated_store):
+    """Organizers registered for another event cannot approve or reject proposals for this event."""
+    candidate = {
+        "target_schedule_id": "sch-001",
+        "title": "Breakfast Shift",
+        "strategy": "RESCHEDULE_SESSION",
+        "proposed_changes": [
+            {"record_id": "sch-001", "field": "start_time", "before": "08:00", "after": "08:15"},
+            {"record_id": "sch-001", "field": "end_time", "before": "09:00", "after": "09:15"},
+        ],
+    }
+    created = create_trusted_proposal(isolated_store, candidate)
+    prop_id = created["proposal_id"]
+
+    # 1. EventStore prevents adding organizers for nonexistent/foreign events
+    with pytest.raises(ValueError) as exc_add:
+        isolated_store.add_organizer(
+            {
+                "id": "usr-foreign-lead",
+                "event_id": "evt-002",
+                "name": "Foreign Event Lead",
+                "role": "lead_organizer",
+                "status": "active",
+            }
+        )
+    assert "Referenced event 'evt-002' does not exist in store" in str(exc_add.value)
+
+    # 2. Context with actor not registered in this store fails authorization
+    foreign_ctx = ApprovalContext(
+        actor_id="usr-foreign-lead",
+        actor_name="Foreign Event Lead",
+        actor_role="lead_organizer",
+    )
+    with pytest.raises(UnauthorizedApprovalError) as exc_exec:
+        execute_approved_proposal_by_id(isolated_store, prop_id, foreign_ctx)
+    assert "has no organizer membership for event 'evt-001'" in str(exc_exec.value)
+
+    with pytest.raises(UnauthorizedApprovalError) as exc_rej:
+        reject_proposal(isolated_store, prop_id, foreign_ctx, reason="Cross event rejection")
+    assert "has no organizer membership for event 'evt-001'" in str(exc_rej.value)
+
+    # 3. Adapter configured for wrong event fails closed
+    class DummyVerifier(TrustedIdentityVerifier):
+        def verify_identity(self, creds):
+            return VerifiedIdentity(user_id="usr-diya-001", auth_source="test", verified_at="2026-10-17T18:00:00Z")
+
+    foreign_adapter = EventMembershipApprovalAdapter(isolated_store, event_id="evt-002", verifier=DummyVerifier())
+    with pytest.raises(UnauthorizedApprovalError) as exc_adap:
+        foreign_adapter.authenticate_and_authorize("valid_token")
+    assert "adapter configured for event 'evt-002', but store exclusively manages event 'evt-001'" in str(exc_adap.value)
+
+
+def test_role_escalation_prevention(isolated_store):
+    """Callers cannot claim higher authority than their authoritative EventStore role."""
+    candidate = {
+        "target_schedule_id": "sch-001",
+        "title": "Breakfast Shift",
+        "strategy": "RESCHEDULE_SESSION",
+        "proposed_changes": [
+            {"record_id": "sch-001", "field": "start_time", "before": "08:00", "after": "08:15"},
+            {"record_id": "sch-001", "field": "end_time", "before": "09:00", "after": "09:15"},
+        ],
+    }
+    created = create_trusted_proposal(isolated_store, candidate)
+    prop_id = created["proposal_id"]
+
+    # usr-org-002 has authoritative role 'organizer' in EventStore.
+    # Caller attempts role escalation by setting actor_role='lead_organizer'.
+    escalated_ctx = ApprovalContext(
+        actor_id="usr-org-002",
+        actor_name="Alex Organizer",
+        actor_role="lead_organizer",  # Escalation attempt!
+    )
+
+    with pytest.raises(UnauthorizedApprovalError) as exc_exec:
+        execute_approved_proposal_by_id(isolated_store, prop_id, escalated_ctx)
+    assert "Role escalation/mismatch rejected" in str(exc_exec.value)
+    assert "claimed role 'lead_organizer'" in str(exc_exec.value)
+    assert "authoritative EventStore role is 'organizer'" in str(exc_exec.value)
+
+    # Schedule change transaction also rejects role escalation
+    tx_proposal = dict(candidate, proposal_id=prop_id)
+    with pytest.raises(UnauthorizedApprovalError) as exc_tx:
+        execute_approved_schedule_change_transaction(isolated_store, tx_proposal, escalated_ctx)
+    assert "Role escalation/mismatch rejected" in str(exc_tx.value)
+
+    # Rejection also rejects role escalation
+    with pytest.raises(UnauthorizedApprovalError) as exc_rej:
+        reject_proposal(isolated_store, prop_id, escalated_ctx, reason="Escalated reject")
+    assert "Role escalation/mismatch rejected" in str(exc_rej.value)
+
+
+def test_authoritative_role_derivation_confirmed_commitments(isolated_store):
+    """Confirmed commitment override requires authoritative lead_organizer role from EventStore."""
+    # sch-003 Keynote is confirmed
+    candidate = {
+        "target_schedule_id": "sch-003",
+        "title": "Keynote Shift",
+        "strategy": "RESCHEDULE_SESSION",
+        "affects_confirmed_commitments": True,
+        "proposed_changes": [
+            {"record_id": "sch-003", "field": "start_time", "before": "09:30", "after": "09:15"},
+            {"record_id": "sch-003", "field": "end_time", "before": "10:30", "after": "10:15"},
+        ],
+    }
+    created = create_trusted_proposal(isolated_store, candidate)
+    prop_id = created["proposal_id"]
+
+    # Organizer attempts to approve confirmed commitment with overrides set
+    org_ctx = ApprovalContext(
+        actor_id="usr-org-002",
+        actor_name="Alex Organizer",
+        actor_role="organizer",
+        override_confirmed_commitments=True,
+        external_confirmations_verified=True,
+    )
+
+    with pytest.raises(ConfirmedCommitmentError) as exc_info:
+        execute_approved_proposal_by_id(isolated_store, prop_id, org_ctx)
+    assert "Modifying confirmed commitments requires 'lead_organizer' authority" in str(exc_info.value)
+
+    # Lead organizer succeeds
+    lead_ctx = ApprovalContext(
+        actor_id="usr-diya-001",
+        actor_name="Diya",
+        actor_role="lead_organizer",
+        override_confirmed_commitments=True,
+        external_confirmations_verified=True,
+    )
+    res = execute_approved_proposal_by_id(isolated_store, prop_id, lead_ctx)
+    assert res["success"] is True
+    assert res["status"] == "approved"
+
+
+def test_event_membership_approval_adapter_fails_closed_without_verifier(isolated_store):
+    """EventMembershipApprovalAdapter fails closed if no TrustedIdentityVerifier is configured."""
+    adapter = EventMembershipApprovalAdapter(isolated_store, event_id="evt-001", verifier=None)
+
+    with pytest.raises(UntrustedApprovalContextError) as exc_auth:
+        adapter.authenticate_and_authorize({"token": "raw-session-token"})
+    assert "Production authentication boundary unconfigured" in str(exc_auth.value)
+    assert "fails closed" in str(exc_auth.value)
+
+    # Public entrypoints fail closed through adapter without verifier
+    with pytest.raises(UntrustedApprovalContextError):
+        apply_approved_proposal_by_id(isolated_store, "prop-fake", adapter=adapter)
+
+    with pytest.raises(UntrustedApprovalContextError):
+        apply_rejected_proposal_by_id(isolated_store, "prop-fake", adapter=adapter)
+
+
+def test_event_membership_approval_adapter_rejects_untrusted_credentials(isolated_store):
+    """EventMembershipApprovalAdapter rejects missing credentials and self-declared contexts."""
+    class DummyVerifier(TrustedIdentityVerifier):
+        def verify_identity(self, request_credentials):
+            return VerifiedIdentity(
+                user_id="usr-diya-001",
+                auth_source="dummy",
+                verified_at="2026-10-17T18:00:00Z",
+            )
+
+    adapter = EventMembershipApprovalAdapter(isolated_store, event_id="evt-001", verifier=DummyVerifier())
+
+    # 1. Missing credentials
+    with pytest.raises(UntrustedApprovalContextError) as exc_none:
+        adapter.authenticate_and_authorize(None)
+    assert "Missing request credentials" in str(exc_none.value)
+
+    # 2. Self-declared ApprovalContext passed directly as credentials rejected
+    fake_ctx = ApprovalContext(
+        actor_id="usr-diya-001",
+        actor_name="Diya",
+        actor_role="lead_organizer",
+    )
+    with pytest.raises(UntrustedApprovalContextError) as exc_ctx:
+        adapter.authenticate_and_authorize(fake_ctx)
+    assert "self-declared ApprovalContext cannot be passed" in str(exc_ctx.value)
+
+
+def test_event_membership_approval_adapter_authoritative_role_derivation(isolated_store):
+    """Adapter derives roles strictly from authoritative EventStore records, never from external credentials."""
+    class MockVerifier(TrustedIdentityVerifier):
+        def __init__(self, user_id, override=False, verified_ext=False):
+            self.user_id = user_id
+            self.override = override
+            self.verified_ext = verified_ext
+
+        def verify_identity(self, request_credentials):
+            if request_credentials == "valid_token":
+                return VerifiedIdentity(
+                    user_id=self.user_id,
+                    auth_source="mock_session_provider",
+                    verified_at="2026-10-17T18:00:00Z",
+                    session_id="sess-mock-123",
+                    override_confirmed_commitments=self.override,
+                    external_confirmations_verified=self.verified_ext,
+                )
+            raise UntrustedApprovalContextError("Invalid session credentials")
+
+    # 1. Lead organizer test: verifier supplies usr-diya-001 -> adapter sets actor_role='lead_organizer'
+    lead_verifier = MockVerifier("usr-diya-001", override=True, verified_ext=True)
+    lead_adapter = EventMembershipApprovalAdapter(isolated_store, event_id="evt-001", verifier=lead_verifier)
+    ctx_lead = lead_adapter.authenticate_and_authorize("valid_token")
+    assert ctx_lead.actor_id == "usr-diya-001"
+    assert ctx_lead.actor_role == "lead_organizer"
+
+    # 2. Organizer test: verifier supplies usr-org-002 -> adapter sets actor_role='organizer'
+    org_verifier = MockVerifier("usr-org-002")
+    org_adapter = EventMembershipApprovalAdapter(isolated_store, event_id="evt-001", verifier=org_verifier)
+    ctx_org = org_adapter.authenticate_and_authorize("valid_token")
+    assert ctx_org.actor_id == "usr-org-002"
+    assert ctx_org.actor_role == "organizer"
+
+    # 3. Non-member user verified externally -> adapter rejects because user is not an organizer
+    foreign_verifier = MockVerifier("usr-nonmember-999")
+    nonmember_adapter = EventMembershipApprovalAdapter(isolated_store, event_id="evt-001", verifier=foreign_verifier)
+    with pytest.raises(UnauthorizedApprovalError) as exc_nm:
+        nonmember_adapter.authenticate_and_authorize("valid_token")
+    assert "User 'usr-nonmember-999' has no organizer membership" in str(exc_nm.value)
+
+    # 4. Inactive user verified externally -> adapter rejects
+    inactive_verifier = MockVerifier("usr-inactive-003")
+    inactive_adapter = EventMembershipApprovalAdapter(isolated_store, event_id="evt-001", verifier=inactive_verifier)
+    with pytest.raises(UnauthorizedApprovalError) as exc_inact:
+        inactive_adapter.authenticate_and_authorize("valid_token")
+    assert "Organizer 'usr-inactive-003' is inactive" in str(exc_inact.value)
+
+    # 5. Invalid token fails verification
+    with pytest.raises(UntrustedApprovalContextError):
+        lead_adapter.authenticate_and_authorize("expired_or_forged_token")
+
+
+def test_organizer_store_model_crud_and_persistence(isolated_store):
+    """EventStore provides atomic, version-incremented CRUD for organizer memberships under lock."""
+    initial_version = isolated_store.version()
+    initial_orgs = isolated_store.all_organizers("evt-001")
+    assert len(initial_orgs) == 3
+
+    # 1. Add organizer
+    new_member = OrganizerMember(
+        id="usr-test-new-001",
+        event_id="evt-001",
+        role=OrganizerRole.ORGANIZER.value,
+        name="New Volunteer Lead",
+        status=MemberStatus.ACTIVE.value,
+    )
+    added = isolated_store.add_organizer(new_member)
+    assert added["id"] == "usr-test-new-001"
+    assert isolated_store.version() == initial_version + 1
+
+    # 2. Find organizer
+    found = isolated_store.find_organizer("usr-test-new-001", "evt-001")
+    assert found is not None
+    assert found["name"] == "New Volunteer Lead"
+    assert found["role"] == "organizer"
+
+    # 3. Update organizer
+    updated = isolated_store.update_organizer("usr-test-new-001", {"status": "inactive"})
+    assert updated is not None
+    assert updated["status"] == "inactive"
+    assert isolated_store.version() == initial_version + 2
+
+    # Verify reload from disk observes the update
+    reloaded = isolated_store.find_organizer("usr-test-new-001", "evt-001")
+    assert reloaded["status"] == "inactive"
+
+    # 4. Remove organizer
+    removed = isolated_store.remove_organizer("usr-test-new-001", "evt-001")
+    assert removed is True
+    assert isolated_store.find_organizer("usr-test-new-001", "evt-001") is None
+    assert isolated_store.version() == initial_version + 3
+
+
+def test_event_store_membership_validation(isolated_store):
+    """EventStore enforces strict validation on roles, statuses, events, and duplicates."""
+    # 1. Duplicate membership for same (user_id, event_id)
+    with pytest.raises(ValueError) as exc_dup:
+        isolated_store.add_organizer(
+            {"id": "usr-diya-001", "event_id": "evt-001", "role": "organizer"}
+        )
+    assert "already exists" in str(exc_dup.value)
+
+    # 2. Invalid role
+    with pytest.raises(ValueError) as exc_role:
+        isolated_store.add_organizer(
+            {"id": "usr-invalid-role", "event_id": "evt-001", "role": "super_admin"}
+        )
+    assert "Invalid organizer role" in str(exc_role.value)
+
+    # 3. Invalid status
+    with pytest.raises(ValueError) as exc_stat:
+        isolated_store.add_organizer(
+            {"id": "usr-invalid-stat", "event_id": "evt-001", "role": "organizer", "status": "suspended"}
+        )
+    assert "Invalid membership status" in str(exc_stat.value)
+
+    # 4. Nonexistent event
+    with pytest.raises(ValueError) as exc_evt:
+        isolated_store.add_organizer(
+            {"id": "usr-fake-evt", "event_id": "evt-999", "role": "organizer"}
+        )
+    assert "Referenced event 'evt-999' does not exist in store" in str(exc_evt.value)
+
+    # 5. Missing / empty ID
+    with pytest.raises(ValueError) as exc_id:
+        isolated_store.add_organizer({"id": "", "event_id": "evt-001", "role": "organizer"})
+    assert "valid non-empty 'id'" in str(exc_id.value)
+
+    # 6. Missing / empty event_id
+    with pytest.raises(ValueError) as exc_empty_evt:
+        isolated_store.add_organizer({"id": "usr-no-evt", "event_id": "", "role": "organizer"})
+    assert "valid non-empty 'event_id'" in str(exc_empty_evt.value)
+
+    # 7. update_organizer with immutable id mutation attempt
+    with pytest.raises(ValueError) as exc_up_id:
+        isolated_store.update_organizer("usr-org-002", {"id": "usr-mutated"})
+    assert "Organizer IDs are immutable" in str(exc_up_id.value)
+
+    # 8. update_organizer with invalid role
+    with pytest.raises(ValueError) as exc_up_role:
+        isolated_store.update_organizer("usr-org-002", {"role": "invalid_role"})
+    assert "Invalid organizer role" in str(exc_up_role.value)
+
+    # 9. update_organizer with invalid status
+    with pytest.raises(ValueError) as exc_up_stat:
+        isolated_store.update_organizer("usr-org-002", {"status": "banned"})
+    assert "Invalid membership status" in str(exc_up_stat.value)
+
+    # 10. update_organizer with nonexistent event
+    with pytest.raises(ValueError) as exc_up_evt:
+        isolated_store.update_organizer("usr-org-002", {"status": "active"}, event_id="evt-999")
+    assert "Referenced event 'evt-999' does not exist in store" in str(exc_up_evt.value)
+
+    # 11. remove_organizer with nonexistent event
+    with pytest.raises(ValueError) as exc_rm_evt:
+        isolated_store.remove_organizer("usr-org-002", event_id="evt-999")
+    assert "Referenced event 'evt-999' does not exist in store" in str(exc_rm_evt.value)
+
+
+def test_organizer_changes_preserve_unrelated_collections_and_cross_process(isolated_store):
+    """Membership mutations preserve all unrelated collections and are safely persistent across instances."""
+    import copy
+
+    # Take snapshot of all unrelated collections
+    sched_snap = copy.deepcopy(isolated_store.all_schedule_items())
+    spk_snap = copy.deepcopy(isolated_store.all_speakers())
+    vnd_snap = copy.deepcopy(isolated_store.all_vendors())
+    spo_snap = copy.deepcopy(isolated_store.all_sponsors())
+    tsk_snap = copy.deepcopy(isolated_store.all_tasks())
+    brf_snap = copy.deepcopy(isolated_store.all_briefings())
+    aud_snap = copy.deepcopy(isolated_store.all_audit_events())
+    prop_snap = copy.deepcopy(isolated_store.all_proposals())
+    evt_snap = copy.deepcopy(isolated_store.get_event())
+    venue_snap = copy.deepcopy(isolated_store.get_venue_constraints())
+
+    # Add organizer
+    isolated_store.add_organizer(
+        {"id": "usr-temp-01", "event_id": "evt-001", "name": "Temp Lead", "role": "organizer"}
+    )
+    # Update organizer
+    isolated_store.update_organizer("usr-temp-01", {"status": "inactive"})
+    # Remove organizer
+    isolated_store.remove_organizer("usr-temp-01")
+
+    # Assert all unrelated collections remain exactly identical
+    assert isolated_store.all_schedule_items() == sched_snap
+    assert isolated_store.all_speakers() == spk_snap
+    assert isolated_store.all_vendors() == vnd_snap
+    assert isolated_store.all_sponsors() == spo_snap
+    assert isolated_store.all_tasks() == tsk_snap
+    assert isolated_store.all_briefings() == brf_snap
+    assert isolated_store.all_audit_events() == aud_snap
+    assert isolated_store.all_proposals() == prop_snap
+    assert isolated_store.get_event() == evt_snap
+    assert isolated_store.get_venue_constraints() == venue_snap
+
+    # Instantiate separate store instance pointing to same file on disk
+    other_process_store = EventStore(storage_path=isolated_store.storage_path)
+    assert other_process_store.version() == isolated_store.version()
+    assert other_process_store.find_organizer("usr-temp-01") is None
+    assert len(other_process_store.all_organizers()) == 3
+
+
+def test_authorization_uses_actual_proposal_event_id(isolated_store):
+    """Authorization validates against the proposal's actual event_id, preventing cross-event redirection."""
+    candidate = {
+        "target_schedule_id": "sch-001",
+        "title": "Breakfast Shift",
+        "strategy": "RESCHEDULE_SESSION",
+        "proposed_changes": [
+            {"record_id": "sch-001", "field": "start_time", "before": "08:00", "after": "08:15"},
+            {"record_id": "sch-001", "field": "end_time", "before": "09:00", "after": "09:15"},
+        ],
+    }
+    # Create proposal with explicit event_id="evt-001"
+    created = create_trusted_proposal(isolated_store, candidate, event_id="evt-001")
+    prop_id = created["proposal_id"]
+    prop = isolated_store.find_proposal(prop_id)
+    assert prop["event_id"] == "evt-001"
+
+    # Attempting to create proposal with mismatched event ID is rejected
+    with pytest.raises(InvalidProposalError) as exc_prop_evt:
+        create_trusted_proposal(isolated_store, candidate, event_id="evt-999")
+    assert "Proposal event_id 'evt-999' does not match store event ID" in str(exc_prop_evt.value)
+
+
+def test_stale_authorization_rechecked_under_lock_after_deactivation(isolated_store):
+    """Pre-issued ApprovalContext fails inside transaction if organizer was deactivated before execution."""
+    candidate = {
+        "target_schedule_id": "sch-001",
+        "title": "Breakfast Shift",
+        "strategy": "RESCHEDULE_SESSION",
+        "proposed_changes": [
+            {"record_id": "sch-001", "field": "start_time", "before": "08:00", "after": "08:15"},
+            {"record_id": "sch-001", "field": "end_time", "before": "09:00", "after": "09:15"},
+        ],
+    }
+    created = create_trusted_proposal(isolated_store, candidate)
+    prop_id = created["proposal_id"]
+
+    # Valid ApprovalContext constructed while usr-org-002 is active
+    org_ctx = ApprovalContext(
+        actor_id="usr-org-002",
+        actor_name="Alex Organizer",
+        actor_role="organizer",
+    )
+
+    # Deactivate organizer in store BEFORE execution
+    isolated_store.update_organizer("usr-org-002", {"status": "inactive"})
+
+    # Execution inside the transaction rechecks membership under lock and rejects
+    with pytest.raises(UnauthorizedApprovalError) as exc_info:
+        execute_approved_proposal_by_id(isolated_store, prop_id, org_ctx)
+    assert "is an inactive organizer for event 'evt-001'" in str(exc_info.value)
+
+    # Proposal remains pending because transaction rolled back
+    fresh_prop = isolated_store.find_proposal(prop_id)
+    assert fresh_prop["status"] == "pending"
+
+
+def test_stale_authorization_rechecked_under_lock_after_role_demotion(isolated_store):
+    """Pre-issued ApprovalContext fails inside transaction if lead organizer was demoted before execution."""
+    # Proposal modifying confirmed commitment (requires lead_organizer)
+    candidate = {
+        "target_schedule_id": "sch-003",
+        "title": "Keynote Shift",
+        "strategy": "RESCHEDULE_SESSION",
+        "affects_confirmed_commitments": True,
+        "proposed_changes": [
+            {"record_id": "sch-003", "field": "start_time", "before": "09:30", "after": "09:15"},
+            {"record_id": "sch-003", "field": "end_time", "before": "10:30", "after": "10:15"},
+        ],
+    }
+    created = create_trusted_proposal(isolated_store, candidate)
+    prop_id = created["proposal_id"]
+
+    # Pre-issued context claiming lead_organizer
+    lead_ctx = ApprovalContext(
+        actor_id="usr-diya-001",
+        actor_name="Diya",
+        actor_role="lead_organizer",
+        override_confirmed_commitments=True,
+        external_confirmations_verified=True,
+    )
+
+    # Demote Diya to regular organizer in store BEFORE execution
+    isolated_store.update_organizer("usr-diya-001", {"role": "organizer"})
+
+    # Execution inside transaction under lock detects role mismatch
+    with pytest.raises(UnauthorizedApprovalError) as exc_info:
+        execute_approved_proposal_by_id(isolated_store, prop_id, lead_ctx)
+    assert "Role escalation/mismatch rejected" in str(exc_info.value)
+    assert "claimed role 'lead_organizer'" in str(exc_info.value)
+    assert "authoritative EventStore role is 'organizer'" in str(exc_info.value)
+
+    # Schedule item was not modified
+    item = isolated_store.find_schedule_item("sch-003")
+    assert item["start_time"] == "09:30"
+
+
+def test_internal_test_adapter_blocked_in_production(isolated_store, monkeypatch):
+    """InternalTestApprovalAdapter cannot be used or executed in production environments."""
+    ctx = ApprovalContext(
+        actor_id="usr-diya-001",
+        actor_name="Diya",
+        actor_role="lead_organizer",
+    )
+
+    # 1. Instantiation blocked when ENVIRONMENT=production
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    with pytest.raises(RuntimeError) as exc_env:
+        InternalTestApprovalAdapter(ctx)
+    assert "InternalTestApprovalAdapter is strictly restricted to test suites" in str(exc_env.value)
+
+    # 2. Instantiation blocked when NODE_ENV=production
+    monkeypatch.delenv("ENVIRONMENT")
+    monkeypatch.setenv("NODE_ENV", "production")
+    with pytest.raises(RuntimeError) as exc_node:
+        InternalTestApprovalAdapter(ctx)
+    assert "InternalTestApprovalAdapter is strictly restricted to test suites" in str(exc_node.value)
+
+    # 3. Public entrypoint guards block InternalTestApprovalAdapter in production
+    monkeypatch.delenv("NODE_ENV")
+    test_adapter = InternalTestApprovalAdapter(ctx)
+
+    monkeypatch.setenv("NODE_ENV", "production")
+    with pytest.raises(UntrustedApprovalContextError) as exc_app:
+        apply_approved_proposal_by_id(isolated_store, "prop-123", adapter=test_adapter)
+    assert "InternalTestApprovalAdapter is strictly forbidden in production" in str(exc_app.value)
+
+    with pytest.raises(UntrustedApprovalContextError) as exc_rej:
+        apply_rejected_proposal_by_id(isolated_store, "prop-123", adapter=test_adapter)
+    assert "InternalTestApprovalAdapter is strictly forbidden in production" in str(exc_rej.value)
+
+    with pytest.raises(UntrustedApprovalContextError) as exc_sched:
+        apply_approved_schedule_change(isolated_store, {"proposal_id": "p-1"}, adapter=test_adapter)
+    assert "InternalTestApprovalAdapter is strictly forbidden in production" in str(exc_sched.value)

@@ -372,3 +372,40 @@ BRIEFINGS = [
         "confirmation_state": "tentative",
     },
 ]
+
+# ---------------------------------------------------------------------------
+# Organizer Memberships (Event-Scoped Authorization Fixtures)
+#
+# Minimal demo membership fixtures for DubHacks 2026 (evt-001).
+# These records define authoritative event roles within EventStore.
+# They do NOT represent authenticated credentials, sessions, or accounts.
+# ---------------------------------------------------------------------------
+ORGANIZERS = [
+    {
+        "id": "usr-diya-001",
+        "event_id": "evt-001",
+        "name": "Diya",
+        "role": "lead_organizer",
+        "status": "active",
+        "created_at": "2026-10-15T08:00:00Z",
+        "updated_at": "2026-10-15T08:00:00Z",
+    },
+    {
+        "id": "usr-org-002",
+        "event_id": "evt-001",
+        "name": "Alex Organizer",
+        "role": "organizer",
+        "status": "active",
+        "created_at": "2026-10-15T08:00:00Z",
+        "updated_at": "2026-10-15T08:00:00Z",
+    },
+    {
+        "id": "usr-inactive-003",
+        "event_id": "evt-001",
+        "name": "Inactive Volunteer",
+        "role": "organizer",
+        "status": "inactive",
+        "created_at": "2026-10-15T08:00:00Z",
+        "updated_at": "2026-10-15T08:00:00Z",
+    },
+]

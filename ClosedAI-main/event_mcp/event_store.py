@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from seed_data import (
     BRIEFINGS,
     EVENT,
+    ORGANIZERS,
     SCHEDULE_ITEMS,
     SPEAKERS,
     SPONSORS,
@@ -320,6 +321,46 @@ class ProposalRecord:
         )
 
 
+class OrganizerRole(str, Enum):
+    LEAD_ORGANIZER = "lead_organizer"
+    ORGANIZER = "organizer"
+
+
+class MemberStatus(str, Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+
+
+@dataclass
+class OrganizerMember:
+    """Event-scoped organizer membership record.
+
+    Defines an authorized organizer for an event. Role and status are authoritative
+    facts stored in the EventStore, never derived from client-provided headers or tokens.
+    """
+    id: str  # Stable user ID, e.g. "usr-diya-001"
+    event_id: str  # Associated event ID, e.g. "evt-001"
+    role: str  # "lead_organizer" or "organizer"
+    name: str = ""
+    status: str = MemberStatus.ACTIVE.value
+    created_at: str = ""
+    updated_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> OrganizerMember:
+        return cls(
+            id=data["id"],
+            event_id=data.get("event_id", "evt-001"),
+            role=data.get("role", OrganizerRole.ORGANIZER.value),
+            name=data.get("name", ""),
+            status=data.get("status", MemberStatus.ACTIVE.value),
+            created_at=data.get("created_at", ""),
+            updated_at=data.get("updated_at", ""),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Persistent Event Store Implementation
@@ -563,6 +604,7 @@ class EventStore:
                     "briefings": copy.deepcopy(BRIEFINGS),
                     "audit_trail": [],
                     "proposals": [],
+                    "organizers": copy.deepcopy(ORGANIZERS),
                 }
                 self._save_under_lock()
 
@@ -581,11 +623,18 @@ class EventStore:
             "briefings": copy.deepcopy(BRIEFINGS),
             "audit_trail": [],
             "proposals": [],
+            "organizers": copy.deepcopy(ORGANIZERS),
         }
         for key, val in defaults.items():
             if key not in data or data[key] is None:
                 data[key] = val
         return data
+
+    def version(self) -> int:
+        """Return the current store data version under lock."""
+        with self._lock:
+            self._ensure_fresh()
+            return int(self._data.get("version", 1))
 
     @contextmanager
     def transaction(self):
@@ -1091,6 +1140,168 @@ class EventStore:
                         self._save_under_lock()
                         return copy.deepcopy(p)
                 return None
+
+    # -----------------------------------------------------------------------
+    # Organizer Membership Registry (Event-Scoped Authorization)
+    # -----------------------------------------------------------------------
+    def all_organizers(self, event_id: str | None = None) -> list[dict[str, Any]]:
+        """Return all registered event organizers (optionally filtered by event_id)."""
+        with self._lock:
+            self._ensure_fresh()
+            orgs = copy.deepcopy(self._data.get("organizers", []))
+            if event_id:
+                orgs = [o for o in orgs if o.get("event_id") == event_id]
+            return orgs
+
+    def find_organizer(self, user_id: str, event_id: str | None = None) -> dict[str, Any] | None:
+        """Find an organizer membership by user ID (and optionally event_id)."""
+        with self._lock:
+            self._ensure_fresh()
+            for o in self._data.get("organizers", []):
+                if o.get("id") == user_id:
+                    if event_id is None or o.get("event_id") == event_id:
+                        return copy.deepcopy(o)
+            return None
+
+    def add_organizer(self, organizer: dict[str, Any] | OrganizerMember) -> dict[str, Any]:
+        """Add an organizer membership record under lock.
+
+        Invariants Enforced:
+        1. Prevents duplicate membership entries for the same (user_id, event_id).
+        2. Validates role against OrganizerRole enum ('lead_organizer', 'organizer').
+        3. Validates status against MemberStatus enum ('active', 'inactive').
+        4. Validates that the referenced event exists in the store.
+        """
+        o_dict = organizer.to_dict() if isinstance(organizer, OrganizerMember) else copy.deepcopy(organizer)
+        o_id = str(o_dict.get("id") or "").strip()
+        evt_id = str(o_dict.get("event_id") or "").strip()
+        if not o_id:
+            raise ValueError("Organizer record must have a valid non-empty 'id'.")
+        if not evt_id:
+            raise ValueError("Organizer record must have a valid non-empty 'event_id'.")
+
+        role = str(o_dict.get("role") or "").strip()
+        valid_roles = {r.value for r in OrganizerRole}
+        if role not in valid_roles:
+            raise ValueError(
+                f"Invalid organizer role '{role}'. Must be one of {sorted(valid_roles)}."
+            )
+
+        status = str(o_dict.get("status") or MemberStatus.ACTIVE.value).strip()
+        valid_statuses = {s.value for s in MemberStatus}
+        if status not in valid_statuses:
+            raise ValueError(
+                f"Invalid membership status '{status}'. Must be one of {sorted(valid_statuses)}."
+            )
+
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        o_dict["id"] = o_id
+        o_dict["event_id"] = evt_id
+        o_dict["role"] = role
+        o_dict["status"] = status
+        if not o_dict.get("created_at"):
+            o_dict["created_at"] = now_iso
+        o_dict["updated_at"] = now_iso
+
+        with self._lock:
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                hosted_event_id = self._data.get("event", {}).get("id")
+                if hosted_event_id and evt_id != hosted_event_id:
+                    raise ValueError(
+                        f"Referenced event '{evt_id}' does not exist in store. "
+                        f"This store instance exclusively manages event '{hosted_event_id}'."
+                    )
+
+                if "organizers" not in self._data:
+                    self._data["organizers"] = []
+
+                for existing in self._data["organizers"]:
+                    if existing.get("id") == o_id and existing.get("event_id") == evt_id:
+                        raise ValueError(
+                            f"Organizer membership for user '{o_id}' in event '{evt_id}' already exists. "
+                            "Use update_organizer to modify existing memberships."
+                        )
+
+                self._data["organizers"].append(o_dict)
+                self._data["version"] = int(self._data.get("version", 0)) + 1
+                self._save_under_lock()
+                return copy.deepcopy(o_dict)
+
+    def update_organizer(self, user_id: str, updates: dict[str, Any], event_id: str | None = None) -> dict[str, Any] | None:
+        """Update fields of an existing organizer record under lock."""
+        with self._lock:
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                hosted_event_id = self._data.get("event", {}).get("id")
+                if event_id and hosted_event_id and event_id != hosted_event_id:
+                    raise ValueError(
+                        f"Referenced event '{event_id}' does not exist in store. "
+                        f"This store instance exclusively manages event '{hosted_event_id}'."
+                    )
+
+                if "id" in updates and str(updates["id"]).strip() != user_id:
+                    raise ValueError(
+                        f"Cannot modify organizer membership 'id' from '{user_id}' to '{updates['id']}'. "
+                        "Organizer IDs are immutable. Remove and re-add to change user ID."
+                    )
+
+                if "event_id" in updates:
+                    new_evt = str(updates["event_id"]).strip()
+                    if hosted_event_id and new_evt != hosted_event_id:
+                        raise ValueError(
+                            f"Referenced event '{new_evt}' does not exist in store. "
+                            f"This store instance exclusively manages event '{hosted_event_id}'."
+                        )
+
+                if "role" in updates:
+                    role = str(updates["role"]).strip()
+                    valid_roles = {r.value for r in OrganizerRole}
+                    if role not in valid_roles:
+                        raise ValueError(
+                            f"Invalid organizer role '{role}'. Must be one of {sorted(valid_roles)}."
+                        )
+
+                if "status" in updates:
+                    status = str(updates["status"]).strip()
+                    valid_statuses = {s.value for s in MemberStatus}
+                    if status not in valid_statuses:
+                        raise ValueError(
+                            f"Invalid membership status '{status}'. Must be one of {sorted(valid_statuses)}."
+                        )
+
+                for o in self._data.get("organizers", []):
+                    if o.get("id") == user_id:
+                        if event_id is None or o.get("event_id") == event_id:
+                            o.update(updates)
+                            o["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                            self._data["version"] = int(self._data.get("version", 0)) + 1
+                            self._save_under_lock()
+                            return copy.deepcopy(o)
+                return None
+
+    def remove_organizer(self, user_id: str, event_id: str | None = None) -> bool:
+        """Remove an organizer record under lock. Returns True if removed."""
+        with self._lock:
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                hosted_event_id = self._data.get("event", {}).get("id")
+                if event_id and hosted_event_id and event_id != hosted_event_id:
+                    raise ValueError(
+                        f"Referenced event '{event_id}' does not exist in store. "
+                        f"This store instance exclusively manages event '{hosted_event_id}'."
+                    )
+
+                initial_len = len(self._data.get("organizers", []))
+                self._data["organizers"] = [
+                    o for o in self._data.get("organizers", [])
+                    if not (o.get("id") == user_id and (event_id is None or o.get("event_id") == event_id))
+                ]
+                if len(self._data["organizers"]) < initial_len:
+                    self._data["version"] = int(self._data.get("version", 0)) + 1
+                    self._save_under_lock()
+                    return True
+                return False
 
 
 # ---------------------------------------------------------------------------

@@ -55,6 +55,9 @@ from event_store import (
     AuditEvent,
     ConfirmationState,
     EventStore,
+    MemberStatus,
+    OrganizerMember,
+    OrganizerRole,
     ProposalRecord,
     ProposalStatus,
 )
@@ -188,19 +191,180 @@ class AuthenticatedApprovalAdapter(ABC):
         pass
 
 
+@dataclass(frozen=True)
+class VerifiedIdentity:
+    """Represents a verified external identity passed from a trusted authentication boundary.
+
+    TRUST BOUNDARY SPECIFICATION:
+    This object is produced exclusively by a TrustedIdentityVerifier (e.g., verifying
+    a future NextAuth session cookie, iron-session, OIDC token, or mutual TLS cert).
+    It contains ONLY the verified principal ID and authentication metadata.
+    It does NOT contain or trust client-supplied roles or permissions.
+    Role and event authorization are derived strictly from authoritative EventStore
+    membership records.
+    """
+    user_id: str
+    auth_source: str
+    verified_at: str
+    session_id: str = ""
+    override_confirmed_commitments: bool = False
+    external_confirmations_verified: bool = False
+
+
+class TrustedIdentityVerifier(ABC):
+    """Abstract interface for verifying external identity credentials.
+
+    A future production verifier (e.g. NextAuthSessionVerifier) will validate
+    cryptographic session tokens or cookies against the auth provider.
+    If no verifier is provided or verification fails, the system fails closed.
+    """
+
+    @abstractmethod
+    def verify_identity(self, request_credentials: Any) -> VerifiedIdentity:
+        """Verify the external request credentials and return a VerifiedIdentity.
+
+        Must raise UntrustedApprovalContextError or UnauthorizedApprovalError if
+        credentials are missing, unverified, expired, or invalid.
+        """
+        pass
+
+
+class EventMembershipApprovalAdapter(AuthenticatedApprovalAdapter):
+    """Production-compatible approval adapter enforcing event membership authorization.
+
+    Enforces the Phase 5B.3 authorization boundary:
+    1. Requires a configured TrustedIdentityVerifier to authenticate external credentials.
+       If verifier is None or unconfigured, FAILS CLOSED with UntrustedApprovalContextError.
+    2. Rejects arbitrary caller IDs, HTTP headers, unverified request dicts, shared API keys,
+       or conversation IDs.
+    3. Rejects callers attempting to pass self-declared ApprovalContext objects directly as credentials.
+    4. Queries the authoritative EventStore membership records for (verified_identity.user_id, event_id).
+    5. Rejects non-members, inactive members, and unauthorized roles.
+    6. Derives the user's role authoritatively from the EventStore membership record, NEVER
+       from caller-provided role strings.
+    """
+
+    def __init__(
+        self,
+        store: EventStore,
+        event_id: str = "evt-001",
+        verifier: TrustedIdentityVerifier | None = None,
+    ):
+        self._store = store
+        self._event_id = str(event_id or "").strip()
+        self._verifier = verifier
+
+    def authenticate_and_authorize(self, request_data: Any) -> ApprovalContext:
+        if self._verifier is None:
+            raise UntrustedApprovalContextError(
+                "Production authentication boundary unconfigured: No TrustedIdentityVerifier is registered. "
+                "The system fails closed because no real authentication provider (e.g. NextAuth / OIDC) "
+                "is currently installed to verify session credentials."
+            )
+
+        if request_data is None:
+            raise UntrustedApprovalContextError(
+                "Missing request credentials: raw external credentials required for identity verification."
+            )
+
+        # Do not treat self-declared ApprovalContext, arbitrary dicts, or headers as verified
+        if isinstance(request_data, ApprovalContext):
+            raise UntrustedApprovalContextError(
+                "Untrusted credentials: self-declared ApprovalContext cannot be passed as raw authentication credentials."
+            )
+
+        try:
+            verified = self._verifier.verify_identity(request_data)
+        except (UntrustedApprovalContextError, UnauthorizedApprovalError):
+            raise
+        except Exception as e:
+            raise UntrustedApprovalContextError(
+                f"Identity verification failed at trusted authentication boundary: {e}"
+            ) from e
+
+        if not isinstance(verified, VerifiedIdentity):
+            raise UntrustedApprovalContextError(
+                "TrustedIdentityVerifier returned invalid object: expected VerifiedIdentity instance."
+            )
+
+        user_id = str(verified.user_id or "").strip()
+        if not user_id:
+            raise UntrustedApprovalContextError(
+                "Identity verification failed: VerifiedIdentity has an empty user_id."
+            )
+
+        # Verify adapter event_id matches the hosted store event
+        hosted_event_id = self._store.get_event().get("id")
+        if self._event_id and hosted_event_id and self._event_id != hosted_event_id:
+            raise UnauthorizedApprovalError(
+                f"Cross-event access rejected: adapter configured for event '{self._event_id}', "
+                f"but store exclusively manages event '{hosted_event_id}'."
+            )
+
+        # Look up authoritative membership in EventStore
+        member = self._store.find_organizer(user_id, event_id=self._event_id)
+        if not member:
+            all_orgs = self._store.all_organizers()
+            other_event = next((o.get("event_id") for o in all_orgs if o.get("id") == user_id), None)
+            if other_event:
+                raise UnauthorizedApprovalError(
+                    f"Cross-event access rejected: user '{user_id}' is registered for event '{other_event}', "
+                    f"not event '{self._event_id}'."
+                )
+            raise UnauthorizedApprovalError(
+                f"User '{user_id}' has no organizer membership for event '{self._event_id}'."
+            )
+
+        if member.get("status") != MemberStatus.ACTIVE.value:
+            raise UnauthorizedApprovalError(
+                f"Organizer '{user_id}' is inactive for event '{self._event_id}'."
+            )
+
+        authoritative_role = member.get("role")
+        if authoritative_role not in AUTHORIZED_ROLES:
+            raise UnauthorizedApprovalError(
+                f"Organizer '{user_id}' has unauthorized role '{authoritative_role}' for event '{self._event_id}'."
+            )
+
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        return ApprovalContext(
+            actor_id=member["id"],
+            actor_name=member.get("name") or member["id"],
+            actor_role=authoritative_role,  # Derived authoritatively from EventStore
+            session_id=verified.session_id,
+            timestamp=verified.verified_at or now_iso,
+            override_confirmed_commitments=verified.override_confirmed_commitments,
+            external_confirmations_verified=verified.external_confirmations_verified,
+        )
+
+
 class InternalTestApprovalAdapter(AuthenticatedApprovalAdapter):
     """Internal test adapter used strictly by test harnesses.
 
     DOCUMENTED LIMITATION:
+        RESTRICTED TO TEST SUITES ONLY.
         This adapter is internal-only for testing transaction semantics without
-        simulating or faking production authentication. It must NEVER be exposed
-        to external callers or production API routes.
+        simulating or faking production authentication. It must NEVER be registered
+        in production or exposed to external callers or production API routes.
     """
 
     def __init__(self, context: ApprovalContext):
+        env = (os.environ.get("ENVIRONMENT") or "").strip().lower()
+        node_env = (os.environ.get("NODE_ENV") or "").strip().lower()
+        if env == "production" or node_env == "production":
+            raise RuntimeError(
+                "InternalTestApprovalAdapter is strictly restricted to test suites and "
+                "cannot be instantiated in production environments."
+            )
         self._context = context
 
     def authenticate_and_authorize(self, request_data: Any = None) -> ApprovalContext:
+        env = (os.environ.get("ENVIRONMENT") or "").strip().lower()
+        node_env = (os.environ.get("NODE_ENV") or "").strip().lower()
+        if env == "production" or node_env == "production":
+            raise RuntimeError(
+                "InternalTestApprovalAdapter cannot be used in production environments."
+            )
         return self._context
 
 
@@ -251,6 +415,66 @@ def is_proposal_expired(expires_at_str: str, now: datetime | None = None) -> boo
         return True
 
 
+def _verify_organizer_authorization_under_lock(
+    staged: dict[str, Any],
+    context: ApprovalContext,
+    target_event_id: str | None,
+    action_desc: str = "proposal execution",
+) -> str:
+    """Verify organizer membership and derive authoritative role under EventStore lock.
+
+    Guarantees (Phase 5B.3):
+    1. Cross-event execution/rejection is rejected if proposal event does not match live store event.
+    2. Actor must exist in staged["organizers"] for the event.
+    3. Actor status must be 'active' (rejects inactive members).
+    4. Authoritative role must be in AUTHORIZED_ROLES.
+    5. Caller cannot escalate roles: if context.actor_role is specified and does not match the
+       authoritative role stored in EventStore, raises UnauthorizedApprovalError.
+    6. Returns the authoritative effective role derived strictly from EventStore.
+    """
+    actual_event_id = staged.get("event", {}).get("id") or "evt-001"
+    evt_id = target_event_id or actual_event_id
+    if target_event_id and target_event_id != actual_event_id:
+        raise InvalidProposalError(
+            f"Proposal event_id '{target_event_id}' does not match live event ID '{actual_event_id}'."
+        )
+
+    organizers = staged.get("organizers", [])
+    member = next(
+        (o for o in organizers if o.get("id") == context.actor_id and o.get("event_id") == evt_id),
+        None,
+    )
+    if not member:
+        other_event = next((o.get("event_id") for o in organizers if o.get("id") == context.actor_id), None)
+        if other_event:
+            raise UnauthorizedApprovalError(
+                f"Cross-event authorization rejected: actor '{context.actor_id}' is registered for "
+                f"event '{other_event}', not event '{evt_id}'."
+            )
+        raise UnauthorizedApprovalError(
+            f"Actor '{context.actor_id}' has no organizer membership for event '{evt_id}'."
+        )
+
+    if member.get("status") != MemberStatus.ACTIVE.value:
+        raise UnauthorizedApprovalError(
+            f"Actor '{context.actor_id}' is an inactive organizer for event '{evt_id}'."
+        )
+
+    authoritative_role = member.get("role")
+    if authoritative_role not in AUTHORIZED_ROLES:
+        raise UnauthorizedApprovalError(
+            f"Actor '{context.actor_id}' has unauthorized role '{authoritative_role}' for event '{evt_id}'."
+        )
+
+    if context.actor_role and context.actor_role != authoritative_role:
+        raise UnauthorizedApprovalError(
+            f"Role escalation/mismatch rejected: actor '{context.actor_id}' claimed role '{context.actor_role}', "
+            f"but authoritative EventStore role is '{authoritative_role}'."
+        )
+
+    return authoritative_role
+
+
 # ---------------------------------------------------------------------------
 # 3. Internal Schedule-Change Transaction Executor
 # ---------------------------------------------------------------------------
@@ -261,22 +485,28 @@ def execute_approved_schedule_change_transaction(
 ) -> dict[str, Any]:
     """Execute an approved schedule mutation within an atomic EventStore transaction.
 
-    INTERNAL-ONLY BACKEND OPERATION.
+    TRUST BOUNDARY WARNING: INTERNAL-ONLY BACKEND OPERATION.
+    This function is a trusted backend transaction executor and is NOT an externally safe
+    entrypoint. It must NEVER be exposed directly to external callers, HTTP routes, or MCP tools.
+    External callers must authenticate through an AuthenticatedApprovalAdapter via public
+    entrypoints (such as apply_approved_schedule_change).
+
     Requires an authorized ApprovalContext supplied by an authenticated adapter.
     NEVER exposed directly as an MCP tool.
 
     Validation & Execution are protected by the same single transaction lock:
     1. Pre-lock structural checks (context type, proposal format).
     2. Lock acquisition & staging (store.transaction()).
-    3. Under-the-lock idempotency check: Rejects duplicate executions of previously committed proposals.
-    4. Under-the-lock target item validation: Ensures target schedule ID exists in current store.
-    5. Under-the-lock baseline freshness check: Compares proposal 'before' fields against current live record.
-    6. Under-the-lock confirmed commitment & external confirmation check.
-    7. Under-the-lock full impact recomputation: Invokes conflict engine against live store state.
-    8. Under-the-lock staged schedule mutation.
-    9. Under-the-lock staged briefing invalidation (draft/ready -> stale, sent -> preserved immutable).
-    10. Under-the-lock staged audit trail append.
-    11. Atomic commit via tempfile + fsync + os.replace.
+    3. Under-the-lock organizer membership verification and authoritative role derivation.
+    4. Under-the-lock idempotency check: Rejects duplicate executions of previously committed proposals.
+    5. Under-the-lock target item validation: Ensures target schedule ID exists in current store.
+    6. Under-the-lock baseline freshness check: Compares proposal 'before' fields against current live record.
+    7. Under-the-lock confirmed commitment & external confirmation check.
+    8. Under-the-lock full impact recomputation: Invokes conflict engine against live store state.
+    9. Under-the-lock staged schedule mutation.
+    10. Under-the-lock staged briefing invalidation (draft/ready -> stale, sent -> preserved immutable).
+    11. Under-the-lock staged audit trail append.
+    12. Atomic commit via tempfile + fsync + os.replace.
     """
     # -----------------------------------------------------------------------
     # Step 1: Pre-Transaction Structural Validations
@@ -327,6 +557,11 @@ def execute_approved_schedule_change_transaction(
     # Step 2: Atomic Transaction Execution (ALL checks under SAME lock)
     # -----------------------------------------------------------------------
     with store.transaction() as staged:
+        # 0. Authoritative Organizer Membership Verification under lock (Phase 5B.3)
+        effective_role = _verify_organizer_authorization_under_lock(
+            staged, context, proposal.get("event_id"), action_desc="schedule change execution"
+        )
+
         # A. Idempotency & Duplicate Rejection under lock
         existing_audit = next(
             (a for a in staged.get("audit_trail", []) if a.get("proposal_id") == proposal_id),
@@ -388,9 +623,9 @@ def execute_approved_schedule_change_transaction(
         affects_confirmed = is_target_confirmed or bool(proposal.get("affects_confirmed_commitments", False))
 
         if affects_confirmed:
-            if context.actor_role not in LEAD_ROLES:
+            if effective_role not in LEAD_ROLES:
                 raise ConfirmedCommitmentError(
-                    f"Actor '{context.actor_id}' with role '{context.actor_role}' cannot modify confirmed "
+                    f"Actor '{context.actor_id}' with role '{effective_role}' cannot modify confirmed "
                     f"commitment '{target_id}'. Modifying confirmed commitments requires 'lead_organizer' authority."
                 )
             if not context.override_confirmed_commitments:
@@ -493,7 +728,7 @@ def execute_approved_schedule_change_transaction(
             proposal_id=proposal_id,
             action_type="schedule_mutation",
             actor_id=context.actor_id,
-            actor_role=context.actor_role,
+            actor_role=effective_role,
             auth_source="internal_transaction_executor",
             timestamp=now_iso,
             target_id=target_id,
@@ -508,7 +743,7 @@ def execute_approved_schedule_change_transaction(
             outcome="success",
             notes=(
                 f"Approved schedule mutation: {target_item.get('title')} moved to "
-                f"{new_start}-{new_end} in {new_room} by {context.actor_role} '{context.actor_name or context.actor_id}'."
+                f"{new_start}-{new_end} in {new_room} by {effective_role} '{context.actor_name or context.actor_id}'."
             ),
         )
         if "audit_trail" not in staged:
@@ -567,6 +802,13 @@ def apply_approved_schedule_change(
             "Invalid approval adapter: adapter must implement AuthenticatedApprovalAdapter."
         )
 
+    env = (os.environ.get("ENVIRONMENT") or "").strip().lower()
+    node_env = (os.environ.get("NODE_ENV") or "").strip().lower()
+    if (env == "production" or node_env == "production") and isinstance(adapter, InternalTestApprovalAdapter):
+        raise UntrustedApprovalContextError(
+            "InternalTestApprovalAdapter is strictly forbidden in production environments."
+        )
+
     verified_context = adapter.authenticate_and_authorize(approval_context)
     return execute_approved_schedule_change_transaction(store, proposal, verified_context)
 
@@ -604,6 +846,10 @@ def create_trusted_proposal(
     ttl_seconds: int = 3600,
 ) -> dict[str, Any]:
     """Accept and validate a deterministic L3 resolution proposal, persisting it server-side.
+
+    TRUST BOUNDARY WARNING: INTERNAL-ONLY BACKEND OPERATION.
+    This function is a trusted internal registry helper and is NOT an externally safe entrypoint.
+    It must NEVER be directly exposed to untrusted external callers, HTTP routes, or MCP tools.
 
     INVARIANTS:
     1. Structure and event association are validated against live store records.
@@ -900,6 +1146,10 @@ def create_trusted_proposal_from_conflict(
 ) -> dict[str, Any]:
     """Generate and persist a trusted proposal directly from deterministic L3 conflict resolution.
 
+    TRUST BOUNDARY WARNING: INTERNAL-ONLY BACKEND OPERATION.
+    This function is a trusted internal registry helper and is NOT an externally safe entrypoint.
+    It must NEVER be directly exposed to untrusted external callers, HTTP routes, or MCP tools.
+
     SERVER-GENERATED PROPOSAL CREATION:
     The caller supplies ONLY the conflict_id (and optional proposal_index/strategy).
     The server independently invokes propose_conflict_resolutions(), selects the deterministic
@@ -1024,6 +1274,12 @@ def reject_proposal(
 ) -> dict[str, Any]:
     """Explicitly reject a proposal in the registry.
 
+    TRUST BOUNDARY WARNING: INTERNAL-ONLY BACKEND OPERATION.
+    This function is a trusted internal state transition executor and is NOT an externally safe
+    entrypoint. It must NEVER be directly exposed to external callers, HTTP routes, or MCP tools.
+    External callers must authenticate through an AuthenticatedApprovalAdapter via
+    apply_rejected_proposal_by_id.
+
     Lifecycle Invariant:
     Rejection transitions proposal status from 'pending' to 'rejected'.
     Does NOT mutate schedule items or briefings.
@@ -1060,6 +1316,11 @@ def reject_proposal(
 
         current_status = proposal.get("status", ProposalStatus.PENDING.value)
         now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+        # Authoritative Organizer Membership Verification under lock (Phase 5B.3)
+        effective_role = _verify_organizer_authorization_under_lock(
+            staged, context, proposal.get("event_id"), action_desc="proposal rejection"
+        )
 
         if current_status == ProposalStatus.APPROVED.value:
             raise InvalidProposalStateError(
@@ -1103,7 +1364,7 @@ def reject_proposal(
                 f"Proposal '{proposal_id}' is in unexpected state '{current_status}'. Expected 'pending'."
             )
 
-        rejection_reason = reason.strip() or f"Rejected by {context.actor_role} '{context.actor_name or context.actor_id}'"
+        rejection_reason = reason.strip() or f"Rejected by {effective_role} '{context.actor_name or context.actor_id}'"
         proposal["status"] = ProposalStatus.REJECTED.value
         proposal["rejection_reason"] = rejection_reason
         proposal["resolved_at"] = now_iso
@@ -1115,7 +1376,7 @@ def reject_proposal(
             proposal_id=proposal_id,
             action_type="proposal_rejection",
             actor_id=context.actor_id,
-            actor_role=context.actor_role,
+            actor_role=effective_role,
             auth_source="internal_proposal_registry",
             timestamp=now_iso,
             target_id=proposal.get("target_schedule_id", ""),
@@ -1142,6 +1403,11 @@ def expire_proposal(
     reason: str = "Expired by TTL",
 ) -> dict[str, Any]:
     """Expire a proposal in the registry.
+
+    TRUST BOUNDARY WARNING: INTERNAL-ONLY BACKEND OPERATION.
+    This function is a trusted internal state transition executor for TTL expiration routines
+    and is NOT an externally safe entrypoint. It must NEVER be directly exposed to external
+    callers, HTTP routes, or MCP tools.
 
     Lifecycle Invariant:
     Transitions proposal from 'pending' to 'expired'.
@@ -1205,6 +1471,12 @@ def execute_approved_proposal_by_id(
     context: ApprovalContext,
 ) -> dict[str, Any]:
     """Execute an approved proposal by proposal ID within an atomic EventStore transaction.
+
+    TRUST BOUNDARY WARNING: INTERNAL-ONLY BACKEND OPERATION.
+    This function is a trusted backend transaction executor and is NOT an externally safe
+    entrypoint. It must NEVER be directly exposed to external callers, HTTP routes, or MCP tools.
+    External callers must authenticate through an AuthenticatedApprovalAdapter via
+    apply_approved_proposal_by_id.
 
     SERVER-OWNED PROPOSAL EXECUTION (Phase 5B.2):
     The caller supplies ONLY the proposal_id and a server-verified ApprovalContext.
@@ -1296,12 +1568,10 @@ def execute_approved_proposal_by_id(
                 f"Proposal '{proposal_id}' is in state '{current_status}', expected 'pending'."
             )
 
-        # Event ID association check
-        actual_event_id = staged.get("event", {}).get("id")
-        if actual_event_id and proposal.get("event_id") and proposal.get("event_id") != actual_event_id:
-            raise InvalidProposalError(
-                f"Proposal event_id '{proposal.get('event_id')}' does not match live event ID '{actual_event_id}'."
-            )
+        # Event ID association and Authoritative Organizer Membership Verification under lock (Phase 5B.3)
+        effective_role = _verify_organizer_authorization_under_lock(
+            staged, context, proposal.get("event_id"), action_desc="proposal execution"
+        )
 
         # 3. Target schedule item resolution
         target_id = proposal.get("target_schedule_id")
@@ -1349,9 +1619,9 @@ def execute_approved_proposal_by_id(
         affects_confirmed = is_target_confirmed or bool(proposal.get("affects_confirmed_commitments", False))
 
         if affects_confirmed:
-            if context.actor_role not in LEAD_ROLES:
+            if effective_role not in LEAD_ROLES:
                 raise ConfirmedCommitmentError(
-                    f"Actor '{context.actor_id}' with role '{context.actor_role}' cannot modify confirmed "
+                    f"Actor '{context.actor_id}' with role '{effective_role}' cannot modify confirmed "
                     f"commitment '{target_id}'. Modifying confirmed commitments requires 'lead_organizer' authority."
                 )
             if not context.override_confirmed_commitments:
@@ -1454,7 +1724,7 @@ def execute_approved_proposal_by_id(
             proposal_id=proposal_id,
             action_type="schedule_mutation",
             actor_id=context.actor_id,
-            actor_role=context.actor_role,
+            actor_role=effective_role,
             auth_source="internal_proposal_registry_executor",
             timestamp=now_iso,
             target_id=target_id,
@@ -1470,7 +1740,7 @@ def execute_approved_proposal_by_id(
             outcome="success",
             notes=(
                 f"Approved proposal '{proposal_id}': {target_item.get('title')} moved to "
-                f"{new_start}-{new_end} in {new_room} by {context.actor_role} '{context.actor_name or context.actor_id}'."
+                f"{new_start}-{new_end} in {new_room} by {effective_role} '{context.actor_name or context.actor_id}'."
             ),
         )
         if "audit_trail" not in staged:
@@ -1523,6 +1793,13 @@ def apply_approved_proposal_by_id(
             "Invalid approval adapter: adapter must implement AuthenticatedApprovalAdapter."
         )
 
+    env = (os.environ.get("ENVIRONMENT") or "").strip().lower()
+    node_env = (os.environ.get("NODE_ENV") or "").strip().lower()
+    if (env == "production" or node_env == "production") and isinstance(adapter, InternalTestApprovalAdapter):
+        raise UntrustedApprovalContextError(
+            "InternalTestApprovalAdapter is strictly forbidden in production environments."
+        )
+
     verified_context = adapter.authenticate_and_authorize(approval_context)
     return execute_approved_proposal_by_id(store, proposal_id, verified_context)
 
@@ -1552,6 +1829,13 @@ def apply_rejected_proposal_by_id(
     if not isinstance(adapter, AuthenticatedApprovalAdapter):
         raise UntrustedApprovalContextError(
             "Invalid approval adapter: adapter must implement AuthenticatedApprovalAdapter."
+        )
+
+    env = (os.environ.get("ENVIRONMENT") or "").strip().lower()
+    node_env = (os.environ.get("NODE_ENV") or "").strip().lower()
+    if (env == "production" or node_env == "production") and isinstance(adapter, InternalTestApprovalAdapter):
+        raise UntrustedApprovalContextError(
+            "InternalTestApprovalAdapter is strictly forbidden in production environments."
         )
 
     verified_context = adapter.authenticate_and_authorize(approval_context)

@@ -739,7 +739,7 @@ def test_multiprocessing_proposal_approval_duplicate_rejection(temp_store_path):
     }
 
     context_dict = {
-        "actor_id": "usr-lead-diya",
+        "actor_id": "usr-diya-001",
         "actor_name": "Diya",
         "actor_role": "lead_organizer",
         "session_id": "sess-mp-test",
