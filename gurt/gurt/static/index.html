@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gurt — Event Operations Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <button id="sidebar-toggle-btn" class="sidebar-toggle-btn" onclick="toggleSidebar()" title="Toggle Chat History">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+        </button>
+
+        <div class="brand-badge">
+          <div class="brand-avatar">🧃</div>
+          <div class="brand-info">
+            <div class="brand-title-row">
+              <h1>Gurt</h1>
+              <span class="version-tag">v2.0 • Live Agent</span>
+            </div>
+            <span class="subtitle">Autonomous Event Operations</span>
+          </div>
+        </div>
+
+        <div class="event-selector-wrap" title="Switch or Create Event">
+          <span class="event-select-icon">🎪</span>
+          <select id="event-select" class="event-select-dropdown" onchange="handleEventSelectChange(this.value)">
+            <option value="evt-dubhacks-2026">DubHacks 2026</option>
+          </select>
+          <button type="button" class="btn-create-event-header" onclick="openNewEventModal()" title="Create New Event">+ Event</button>
+        </div>
+
+        <div class="event-pill" onclick="openEditBriefModal()" style="cursor:pointer;" title="Click to edit event brief">
+          <span class="event-dot"></span>
+          <div class="event-details">
+            <span class="event-name" id="header-event-title">DubHacks 2026 Agentic AI Workshop</span>
+            <span class="event-meta" id="header-event-meta">Nov 15, 2026 • UW HUB Ballroom • 80 Attendees</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="header-right">
+        <!-- Model Selector Dropdown -->
+        <div class="model-selector-wrap" title="Select LLM / Engine">
+          <span class="model-select-icon">⚡</span>
+          <select id="model-select" class="model-select-dropdown" onchange="handleModelChange()">
+            <option value="gemini-3.8-flash" selected>Gemini 3.8 Flash</option>
+            <option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
+            <option value="xai/grok-2-latest">Grok 2 (xAI)</option>
+            <option value="semantic-engine">Dynamic Semantic Engine</option>
+          </select>
+        </div>
+
+        <!-- Live Quick Stats -->
+        <div class="stat-capsule" id="stat-capsule">
+          <div class="stat-item">
+            <span class="stat-label">Budget</span>
+            <span class="stat-val" id="stat-budget">$2,500</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat-item">
+            <span class="stat-label">Tasks</span>
+            <span class="stat-val" id="stat-tasks">0/0</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat-item">
+            <span class="stat-label">Speakers</span>
+            <span class="stat-val" id="stat-speakers">0/0</span>
+          </div>
+        </div>
+
+        <div class="status-indicator">
+          <span class="pulse-dot"></span>
+          <span id="model-badge">Online</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- App Body with Collapsible Sidebar -->
+    <div class="app-body">
+      <!-- Left Sidebar: Operations Navigation, Conversations & Memory -->
+      <aside class="app-sidebar" id="app-sidebar">
+        <div class="sidebar-top">
+          <button class="btn-new-chat" id="btn-new-chat" onclick="handleNewConversation()">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            <span>New Chat</span>
+          </button>
+        </div>
+
+        <!-- Real-Time Search Box -->
+        <div class="sidebar-search-box">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="sidebar-search-input" placeholder="Search chats or views..." oninput="handleSidebarSearch(this.value)">
+        </div>
+
+        <!-- Primary Navigation: Operations Views -->
+        <div class="sidebar-section-header">
+          <span>OPERATIONS VIEWS</span>
+        </div>
+        <nav class="sidebar-nav-list" id="sidebar-nav-list">
+          <button class="nav-item active" id="nav-chat" onclick="navigateToChat()">
+            <span class="nav-icon">💬</span>
+            <span class="nav-label">Chat Console</span>
+          </button>
+          <button class="nav-item" id="nav-approvals" onclick="openSideCanvas('approvals', '⚡', 'Action Center (HITL)')">
+            <span class="nav-icon">⚡</span>
+            <span class="nav-label">Action Center</span>
+            <span class="badge badge-accent" id="nav-approval-count">0</span>
+          </button>
+          <button class="nav-item" id="nav-pdf" onclick="openSideCanvas('pdf', '📑', 'Venue PDF Contract')">
+            <span class="nav-icon">📑</span>
+            <span class="nav-label">PDF Contract</span>
+            <span class="badge" id="nav-pdf-count">1</span>
+          </button>
+          <button class="nav-item" id="nav-tasks" onclick="openSideCanvas('tasks', '✓', 'Logistics Tasks DAG')">
+            <span class="nav-icon">✓</span>
+            <span class="nav-label">Tasks DAG</span>
+            <span class="badge" id="nav-tasks-count">0</span>
+          </button>
+          <button class="nav-item" id="nav-schedule" onclick="openSideCanvas('schedule', '📅', 'Run-of-Show Schedule')">
+            <span class="nav-icon">📅</span>
+            <span class="nav-label">Run-of-Show</span>
+          </button>
+          <button class="nav-item" id="nav-briefings" onclick="openSideCanvas('briefings', '📑', 'Role-Specific Briefings')">
+            <span class="nav-icon">📑</span>
+            <span class="nav-label">Role Briefings</span>
+            <span class="badge" id="nav-briefings-count">0</span>
+          </button>
+          <button class="nav-item" id="nav-vendors" onclick="openSideCanvas('vendors', '🏪', 'Vendors & Sourcing')">
+            <span class="nav-icon">🏪</span>
+            <span class="nav-label">Vendors & Needs</span>
+            <span class="badge" id="nav-vendors-count">0</span>
+          </button>
+          <button class="nav-item" id="nav-speakers" onclick="openSideCanvas('speakers', '🎤', 'Speaker Pipeline')">
+            <span class="nav-icon">🎤</span>
+            <span class="nav-label">Speakers</span>
+            <span class="badge" id="nav-speakers-count">0</span>
+          </button>
+          <button class="nav-item" id="nav-sponsors" onclick="openSideCanvas('sponsors', '💰', 'Sponsorship Pipeline')">
+            <span class="nav-icon">💰</span>
+            <span class="nav-label">Sponsors</span>
+          </button>
+          <button class="nav-item" id="nav-brief" onclick="openSideCanvas('brief', '📋', 'Event Master Brief')">
+            <span class="nav-icon">📋</span>
+            <span class="nav-label">Event Brief</span>
+          </button>
+          <button class="nav-item" id="nav-guardrails" onclick="openSideCanvas('guardrails', '🛡️', 'Safety Guardrails & Policies')">
+            <span class="nav-icon">🛡️</span>
+            <span class="nav-label">Guardrails & Safety</span>
+          </button>
+          <button class="nav-item" id="nav-activity" onclick="openSideCanvas('activity', '📡', 'Live Operational Activity')">
+            <span class="nav-icon">📡</span>
+            <span class="nav-label">Live Activity</span>
+            <span class="badge" id="nav-activity-count">0</span>
+          </button>
+        </nav>
+
+        <!-- Recent Chats -->
+        <div class="sidebar-section-header" style="margin-top:10px;">
+          <span>RECENT CHATS</span>
+          <span class="sidebar-count" id="conv-count-badge">0</span>
+        </div>
+
+        <div class="conversations-list" id="conversations-list">
+          <!-- Dynamically injected conversation items -->
+        </div>
+
+        <div class="sidebar-footer">
+          <button class="btn-sidebar-memory" onclick="openMemoryModal()">
+            <span class="footer-mem-icon">🧠</span>
+            <div class="footer-mem-text">
+              <span class="footer-mem-title">Persistent Memory</span>
+              <span class="footer-mem-sub" id="sidebar-mem-count">0 preferences</span>
+            </div>
+          </button>
+          <div class="sidebar-storage-tag">
+            <span class="storage-dot"></span>
+            <span>SQLite Persistence</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main Workspace: Focused Chat & Pull-Out Side Canvas -->
+      <main class="workspace-grid">
+        <!-- Chat Panel (Spacious Main Stage) -->
+        <section class="chat-panel">
+          <div class="chat-header">
+            <div class="chat-header-title">
+              <div class="chat-title-row">
+                <h2 id="chat-header-title">Operations Terminal</h2>
+                <span class="live-dot" title="Live Agent Active"></span>
+              </div>
+              <span class="chat-header-sub" id="chat-header-sub">Gemini 3.8 Flash • Real-time Event Operations</span>
+            </div>
+
+            <div class="chat-header-actions">
+              <button class="canvas-toggle-btn" id="canvas-toggle-btn" onclick="toggleSideCanvas()" title="Toggle Right Side Canvas">
+                <span id="canvas-toggle-icon">📂</span>
+                <span id="canvas-toggle-text">Side Canvas</span>
+                <span class="badge badge-accent" id="header-canvas-count">0</span>
+              </button>
+              <button class="btn-ghost" onclick="clearHistory()" title="Clear terminal screen">Clear</button>
+            </div>
+          </div>
+
+          <div class="chat-messages" id="chat-messages">
+            <!-- Initial Welcome Message -->
+            <div class="message assistant">
+              <div class="msg-avatar">🧃</div>
+              <div class="msg-body">
+                <p><strong>Yo! I'm Gurt</strong>, your autonomous event operations agent for the <strong>DubHacks 2026 Workshop</strong>.</p>
+                <p>I coordinate our event database, real-time web research, PDF contract generation, and the <strong>Human-in-the-Loop Action Center</strong>:</p>
+                <ul>
+                  <li><strong>Event Brief & Run-of-Show:</strong> Reviewing goals, constraints, and synthesizing realistic schedules.</li>
+                  <li><strong>Outreach:</strong> Researching speakers & sponsors, drafting invites, and preventing duplicate actions.</li>
+                  <li><strong>Vendors:</strong> Sourcing catering ($13.50/head), badges, and supplier contracts against our event budget.</li>
+                  <li><strong>PDF Contracts:</strong> Auto-filling venue facility booking forms and flagging unresolved organizer blanks.</li>
+                </ul>
+                <p>Use the <strong>left navigation</strong> or prompt me directly below!</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick Action Prompt Chips -->
+          <div class="prompt-chips">
+            <button class="chip" onclick="sendQuickPrompt('Fill out the UW HUB booking contract PDF with our saved event facts')">📄 Fill contract PDF</button>
+            <button class="chip" onclick="sendQuickPrompt('Synthesize our run-of-show schedule for 80 attendees')">📅 Run-of-show schedule</button>
+            <button class="chip" onclick="sendQuickPrompt('Draft an outreach invitation to Dr. Alicia Chen')">✉️ Draft speaker invite</button>
+            <button class="chip" onclick="sendQuickPrompt('Compare catering quotes under $15/head')">🥗 Compare catering</button>
+            <button class="chip" onclick="sendQuickPrompt('What are our active vendor requirements and missing facts?')">🔍 Vendor requirements</button>
+          </div>
+
+          <!-- Chat Input Form -->
+          <form class="chat-input-bar" id="chat-form">
+            <input type="text" id="user-input" placeholder="Ask Gurt anything (e.g. 'Fill contract PDF', 'Draft invite to Alicia', 'Add task')..." autocomplete="off">
+            <button type="submit" id="send-btn" class="send-button">
+              <span>Send</span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </button>
+          </form>
+        </section>
+
+        <!-- Side Canvas: Pull-out Operations Board from Right -->
+        <div class="side-canvas collapsed" id="side-canvas">
+          <div class="side-canvas-header">
+            <div class="side-canvas-title-group">
+              <span class="side-canvas-icon" id="side-canvas-icon">⚡</span>
+              <span class="side-canvas-title" id="side-canvas-title">Action Center</span>
+            </div>
+            <div class="side-canvas-actions">
+              <div id="side-canvas-action-btns"></div>
+              <button class="side-canvas-close-btn" onclick="closeSideCanvas()" title="Close side canvas (Esc)">✕</button>
+            </div>
+          </div>
+
+          <div class="side-canvas-body">
+            <!-- PANE: Approvals & HITL Action Center -->
+            <div class="canvas-pane" id="pane-approvals">
+              <div class="pane-header">
+                <div>
+                  <h3>Human-in-the-Loop Action Center</h3>
+                  <p class="pane-desc">Consequential actions require approval before dispatch. Edit drafts inline.</p>
+                </div>
+                <button class="btn-small" onclick="loadApprovals()">↻ Refresh</button>
+              </div>
+              <div class="cards-list" id="approvals-list"><div class="loading-state">Loading action center...</div></div>
+            </div>
+
+            <!-- PANE: Dedicated PDF Venue Contract Inspector -->
+            <div class="canvas-pane" id="pane-pdf">
+              <div class="pane-header">
+                <div>
+                  <h3>Venue Booking Contract (AcroForm)</h3>
+                  <p class="pane-desc">Inspect auto-mapped event facts, identify missing unknowns, and download draft PDFs.</p>
+                </div>
+                <div style="display:flex; gap:6px;">
+                  <button class="btn-small" onclick="loadPdfPane()" title="Inspect template fields">🔍 Inspect</button>
+                  <button class="btn-small btn-primary" onclick="triggerFillPdf()">⚡ Fill PDF Draft</button>
+                </div>
+              </div>
+
+              <div class="pdf-showcase-card" id="pdf-showcase-box" style="margin: 0 16px 14px;">
+                <div class="pdf-showcase-header">
+                  <div class="pdf-title-badge"><span>📑</span><span id="pdf-template-title">UW HUB Facility Agreement Template</span></div>
+                  <span class="badge badge-accent" id="pdf-template-badge">Interactive AcroForm</span>
+                </div>
+                <div class="pdf-stats-row" id="pdf-stats-row">
+                  <span class="pdf-stat-chip" id="pdf-total-chip">16 Fields Total</span>
+                  <span class="pdf-stat-chip" id="pdf-mapped-chip" style="color:var(--accent-emerald);">8 Auto-Mapped</span>
+                  <span class="pdf-stat-chip" id="pdf-unresolved-chip" style="color:var(--accent-amber);">8 Missing/Unresolved</span>
+                </div>
+                <div id="pdf-download-area" style="margin-top:10px;"></div>
+              </div>
+
+              <div class="pdf-fields-audit-box">
+                <div class="pdf-audit-section">
+                  <h4 style="font-size:12px; font-weight:700; color:var(--accent-emerald); display:flex; align-items:center; gap:6px; margin-bottom:8px;">
+                    <span>✓</span> <span>Auto-Mapped Fields (From Brief & Records)</span>
+                  </h4>
+                  <ul class="pdf-mapped-list" id="pdf-mapped-list">
+                    <li><strong>Event_Name:</strong> DubHacks 2026 Agentic AI Workshop</li>
+                    <li><strong>Event_Date:</strong> Nov 15, 2026</li>
+                    <li><strong>Estimated_Attendance:</strong> 80</li>
+                    <li><strong>Facility_Room:</strong> UW HUB Ballroom</li>
+                    <li><strong>Client_Org:</strong> DubHacks Organizing Committee</li>
+                    <li><strong>Catering_Vendor:</strong> Sound Bites Catering</li>
+                    <li><strong>Estimated_Catering_Cost:</strong> $1,080.00 ($13.50/head)</li>
+                    <li><strong>Dietary_Requirements:</strong> Vegetarian, Vegan, Halal, GF</li>
+                  </ul>
+                </div>
+
+                <div class="pdf-audit-section" style="margin-top:14px;">
+                  <h4 style="font-size:12px; font-weight:700; color:var(--accent-amber); display:flex; align-items:center; gap:6px; margin-bottom:8px;">
+                    <span>⚠️</span> <span>Unresolved Fields (Awaiting Organizer Input)</span>
+                  </h4>
+                  <ul class="pdf-unresolved-checklist" id="pdf-unresolved-checklist">
+                    <li><strong>Emergency_Contact_Phone:</strong> Requires on-site organizer mobile number</li>
+                    <li><strong>UW_Budget_Index_Code:</strong> Requires registered student organization budget code</li>
+                    <li><strong>Certificate_of_Liability_Insurance:</strong> Venue requires policy number filed</li>
+                    <li><strong>Alcohol_Permit_Requested:</strong> Default No (Dry event confirmed)</li>
+                    <li><strong>Signee_Title:</strong> Decoupled signing policy requires authorized student officer</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <!-- PANE: Logistics Tasks DAG (Neat & Clear) -->
+            <div class="canvas-pane" id="pane-tasks">
+              <div class="pane-header">
+                <div>
+                  <h3>Logistics Tasks DAG</h3>
+                  <p class="pane-desc">Track dependencies, owners, and progress toward event milestones.</p>
+                </div>
+                <button class="btn-small btn-primary" onclick="openAddTaskModal()">+ New Task</button>
+              </div>
+
+              <!-- Task Progress Overview Bar -->
+              <div class="task-progress-box">
+                <div class="task-progress-header">
+                  <span class="task-progress-title">Milestone Progress</span>
+                  <span class="task-progress-pct" id="task-progress-pct">0% Complete</span>
+                </div>
+                <div class="task-progress-track">
+                  <div class="task-progress-bar" id="task-progress-bar" style="width: 0%;"></div>
+                </div>
+                <div class="task-stats-summary" id="task-stats-summary">
+                  <span>0 Total Tasks</span> • <span style="color:var(--accent-amber);">0 To Do</span> • <span style="color:var(--accent-cyan);">0 In Progress</span> • <span style="color:var(--accent-emerald);">0 Done</span>
+                </div>
+              </div>
+
+              <!-- Filter Chips -->
+              <div class="task-filter-chips">
+                <button class="task-filter-btn active" onclick="filterTasks('all', this)">All</button>
+                <button class="task-filter-btn" onclick="filterTasks('todo', this)">To Do</button>
+                <button class="task-filter-btn" onclick="filterTasks('in_progress', this)">In Progress</button>
+                <button class="task-filter-btn" onclick="filterTasks('done', this)">Completed</button>
+              </div>
+
+              <div class="cards-list" id="tasks-list"><div class="loading-state">Loading tasks...</div></div>
+            </div>
+
+            <!-- PANE: Run-of-Show Schedule -->
+            <div class="canvas-pane" id="pane-schedule">
+              <div class="pane-header">
+                <div>
+                  <h3>Run-of-Show Schedule</h3>
+                  <p class="pane-desc">Timeline: 08:00 setup → keynote → workshops → lunch → demos → teardown.</p>
+                </div>
+                <div style="display:flex; gap:6px;">
+                  <button class="btn-small" onclick="checkScheduleConflicts()" title="Check for room collisions & turnover gaps">⚠️ Audit Conflicts</button>
+                  <button class="btn-small btn-primary" onclick="handleGenerateSchedule()">↻ Re-synthesize</button>
+                </div>
+              </div>
+              <!-- Conflict Detection Alert Banner -->
+              <div id="schedule-conflicts-banner" style="display:none;"></div>
+              <div class="timeline-list" id="schedule-list"><div class="loading-state">Loading schedule...</div></div>
+            </div>
+
+            <!-- PANE: Role-Specific Briefings (Positive Projection) -->
+            <div class="canvas-pane" id="pane-briefings">
+              <div class="pane-header">
+                <div>
+                  <h3>Role-Specific Briefings</h3>
+                  <p class="pane-desc">Filtered operational packets for Speakers, Vendors, and Volunteers with strict data leakage guards.</p>
+                </div>
+                <div style="display:flex; gap:6px;">
+                  <button class="btn-small btn-primary" onclick="openGenerateBriefingModal()">+ Generate Briefing</button>
+                </div>
+              </div>
+
+              <!-- Role Filter Chips -->
+              <div class="task-filter-chips">
+                <button class="task-filter-btn active" onclick="filterBriefings('all', this)">All Roles</button>
+                <button class="task-filter-btn" onclick="filterBriefings('speaker', this)">Speakers</button>
+                <button class="task-filter-btn" onclick="filterBriefings('vendor', this)">Vendors</button>
+                <button class="task-filter-btn" onclick="filterBriefings('volunteer', this)">Volunteers</button>
+              </div>
+
+              <div class="cards-list" id="briefings-list"><div class="loading-state">Loading role briefings...</div></div>
+            </div>
+
+            <!-- PANE: Vendors & Sourcing -->
+            <div class="canvas-pane" id="pane-vendors">
+              <div class="pane-header">
+                <div>
+                  <h3>Vendor Sourcing &amp; Needs</h3>
+                  <p class="pane-desc" id="vendor-pane-desc">Catering, badges, AV specs — evaluated against event budget.</p>
+                </div>
+                <div style="display:flex; gap:6px;">
+                  <button class="btn-small" onclick="loadVendorComparison('Catering')" title="Compare quotes against requirements">📊 Compare Catering</button>
+                  <button class="btn-small" onclick="openAddReqModal()">+ Need</button>
+                  <button class="btn-small btn-primary" onclick="openAddVendorModal()">+ Quote</button>
+                </div>
+              </div>
+              <div id="vendor-comparison-box" style="display:none; margin: 0 16px 14px;"></div>
+              <h4 class="canvas-subheading">REQUIREMENTS &amp; UNKNOWNS</h4>
+              <div class="cards-list" id="requirements-list"><div class="loading-state">Loading requirements...</div></div>
+              <h4 class="canvas-subheading" style="margin-top:14px;">SUPPLIER QUOTES</h4>
+              <div class="cards-list" id="vendors-list"><div class="loading-state">Loading vendors...</div></div>
+            </div>
+
+            <!-- PANE: Speakers Pipeline -->
+            <div class="canvas-pane" id="pane-speakers">
+              <div class="pane-header">
+                <div>
+                  <h3>Speaker Pipeline</h3>
+                  <p class="pane-desc">Keynotes, workshops, proposed time slots, and outreach drafts.</p>
+                </div>
+                <button class="btn-small" onclick="loadSpeakers()">↻ Refresh</button>
+              </div>
+              <div class="cards-list" id="speakers-list"><div class="loading-state">Loading speakers...</div></div>
+            </div>
+
+            <!-- PANE: Sponsorship Pipeline -->
+            <div class="canvas-pane" id="pane-sponsors">
+              <div class="pane-header">
+                <div>
+                  <h3>Sponsorship Pipeline</h3>
+                  <p class="pane-desc">Tracking pledged tiers, cloud compute credits, and mentor support.</p>
+                </div>
+                <button class="btn-small" onclick="loadSponsors()">↻ Refresh</button>
+              </div>
+              <div class="cards-list" id="sponsors-list"><div class="loading-state">Loading sponsors...</div></div>
+            </div>
+
+            <!-- PANE: Event Master Brief -->
+            <div class="canvas-pane" id="pane-brief">
+              <div class="pane-header">
+                <div>
+                  <h3>Event Master Brief</h3>
+                  <p class="pane-desc">Core constraints, goals, dietary specs, and technical requirements.</p>
+                </div>
+                <button class="btn-small btn-primary" onclick="openEditBriefModal()">✎ Edit Brief</button>
+              </div>
+              <div id="brief-display-container"><div class="loading-state">Loading event brief...</div></div>
+            </div>
+
+            <!-- PANE: Safety & Guardrails -->
+            <div class="canvas-pane" id="pane-guardrails">
+              <div class="pane-header">
+                <div>
+                  <h3>Autonomous Safety &amp; Guardrails</h3>
+                  <p class="pane-desc">Hard policy constraints governing autonomous agent execution.</p>
+                </div>
+                <span class="badge badge-accent">Active Enforcers</span>
+              </div>
+
+              <div class="guardrail-cards-list">
+                <div class="guardrail-card">
+                  <div class="guardrail-card-top">
+                    <span class="guardrail-icon">🛡️</span>
+                    <div>
+                      <div class="guardrail-name">Decoupled Signing &amp; Obligation Policy</div>
+                      <div class="guardrail-desc">Gurt is strictly prohibited from executing binding contracts, signing legal documents, or making financial obligations. All PDF forms are generated as DRAFTS for human review.</div>
+                    </div>
+                  </div>
+                  <span class="guardrail-status-pill enforced">ENFORCED</span>
+                </div>
+
+                <div class="guardrail-card">
+                  <div class="guardrail-card-top">
+                    <span class="guardrail-icon">💰</span>
+                    <div>
+                      <div class="guardrail-name">Budget Ceiling Guardrail (Event Hard Cap)</div>
+                      <div class="guardrail-desc">Any vendor quote or cumulative logistics commitment that exceeds the event budget triggers an automatic warning and requires explicit human sign-off.</div>
+                    </div>
+                  </div>
+                  <span class="guardrail-status-pill enforced">ENFORCED</span>
+                </div>
+
+                <div class="guardrail-card">
+                  <div class="guardrail-card-top">
+                    <span class="guardrail-icon">✉️</span>
+                    <div>
+                      <div class="guardrail-name">Human-in-the-Loop External Dispatch Gate</div>
+                      <div class="guardrail-desc">Outbound email invitations and team Slack notifications are stored as Action Proposals. No message is dispatched without human approval or edit.</div>
+                    </div>
+                  </div>
+                  <span class="guardrail-status-pill enforced">ENFORCED</span>
+                </div>
+
+                <div class="guardrail-card">
+                  <div class="guardrail-card-top">
+                    <span class="guardrail-icon">🔍</span>
+                    <div>
+                      <div class="guardrail-name">Duplicate Outreach Prevention</div>
+                      <div class="guardrail-desc">Before drafting or queuing outreach, Gurt verifies contact records to prevent double-contacting speakers or sponsors.</div>
+                    </div>
+                  </div>
+                  <span class="guardrail-status-pill enforced">ENFORCED</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- PANE: Live Operational Activity -->
+            <div class="canvas-pane" id="pane-activity">
+              <div class="pane-header">
+                <div>
+                  <h3>Live Operational Activity Feed</h3>
+                  <p class="pane-desc">Real-time audit log of agent runs, tool calls, approvals, and conflict resolutions.</p>
+                </div>
+                <button class="btn-small btn-primary" onclick="loadActivityFeed()">↻ Refresh</button>
+              </div>
+              <div class="cards-list" id="activity-list"><div class="loading-state">Loading operational activity...</div></div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div> <!-- .app-body -->
+  </div> <!-- .app-container -->
+
+  <!-- Modal: Edit Brief -->
+  <div class="modal-overlay" id="brief-modal" style="display:none;">
+    <div class="modal-card" style="width:580px;">
+      <div class="modal-header">
+        <h3>Edit Event Brief & Constraints</h3>
+        <button class="close-btn" onclick="closeModal('brief-modal')">&times;</button>
+      </div>
+      <form id="edit-brief-form" onsubmit="handleSaveBrief(event)">
+        <div class="form-group">
+          <label>Event Title</label>
+          <input type="text" id="modal-brief-title" required>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Date & Time</label>
+            <input type="text" id="modal-brief-date" required>
+          </div>
+          <div class="form-group">
+            <label>Headcount</label>
+            <input type="number" id="modal-brief-attendees" required>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Location / Venue</label>
+            <input type="text" id="modal-brief-location" required>
+          </div>
+          <div class="form-group">
+            <label>Budget ($)</label>
+            <input type="number" step="50" id="modal-brief-budget" required>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Core Objectives / Goals</label>
+          <textarea id="modal-brief-goals" rows="2"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Dietary Specifications</label>
+          <input type="text" id="modal-brief-dietary">
+        </div>
+        <div class="form-group">
+          <label>AV & Technical Requirements</label>
+          <input type="text" id="modal-brief-av">
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" onclick="closeModal('brief-modal')">Cancel</button>
+          <button type="submit" class="btn-primary">Save Brief</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Create New Event -->
+  <div class="modal-overlay" id="new-event-modal" style="display:none;">
+    <div class="modal-card" style="width:520px;">
+      <div class="modal-header">
+        <h3>Create New Event Workspace</h3>
+        <button class="close-btn" onclick="closeModal('new-event-modal')">&times;</button>
+      </div>
+      <form id="new-event-form" onsubmit="handleCreateNewEvent(event)">
+        <div class="form-group">
+          <label>Event Title</label>
+          <input type="text" id="modal-new-event-title" required placeholder="e.g. Loveable Community Builder Meetup">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Expected Attendees</label>
+            <input type="number" id="modal-new-event-attendees" required value="50">
+          </div>
+          <div class="form-group">
+            <label>Total Budget ($)</label>
+            <input type="number" id="modal-new-event-budget" required value="1500" step="100">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Location / Venue</label>
+            <input type="text" id="modal-new-event-location" required value="Seattle Tech Hub">
+          </div>
+          <div class="form-group">
+            <label>Date & Time</label>
+            <input type="text" id="modal-new-event-date" required value="2026-11-20 09:00">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Event Goals & Scope</label>
+          <textarea id="modal-new-event-goals" rows="2" placeholder="Primary objectives and focus for this event"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" onclick="closeModal('new-event-modal')">Cancel</button>
+          <button type="submit" class="btn-primary">Create Event &amp; Switch</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Edit Action Draft -->
+  <div class="modal-overlay" id="edit-draft-modal" style="display:none;">
+    <div class="modal-card" style="width:540px;">
+      <div class="modal-header">
+        <h3>Edit Action Draft Before Approval</h3>
+        <button class="close-btn" onclick="closeModal('edit-draft-modal')">&times;</button>
+      </div>
+      <form id="edit-draft-form" onsubmit="handleSaveDraftEdit(event)">
+        <input type="hidden" id="modal-draft-id">
+        <div class="form-group">
+          <label>Subject Line</label>
+          <input type="text" id="modal-draft-subject" required>
+        </div>
+        <div class="form-group">
+          <label>Message Body</label>
+          <textarea id="modal-draft-body" rows="8" required></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" onclick="closeModal('edit-draft-modal')">Cancel</button>
+          <button type="submit" class="btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Add Task -->
+  <div class="modal-overlay" id="task-modal" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Log New Logistics Task</h3>
+        <button class="close-btn" onclick="closeModal('task-modal')">&times;</button>
+      </div>
+      <form id="add-task-form" onsubmit="handleCreateTask(event)">
+        <div class="form-group">
+          <label>Task Title</label>
+          <input type="text" id="modal-task-title" required placeholder="e.g. Set up registration badges at HUB desk">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Owner</label>
+            <input type="text" id="modal-task-owner" required value="Operations Lead">
+          </div>
+          <div class="form-group">
+            <label>Category</label>
+            <select id="modal-task-category">
+              <option value="Logistics">Logistics</option>
+              <option value="Outreach">Outreach</option>
+              <option value="Vendors">Vendors</option>
+              <option value="Tech">Tech & AV</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Deadline</label>
+            <input type="date" id="modal-task-deadline" value="2026-11-10">
+          </div>
+          <div class="form-group">
+            <label>Dependencies</label>
+            <input type="text" id="modal-task-deps" value="None" placeholder="e.g. tsk-001 or None">
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" onclick="closeModal('task-modal')">Cancel</button>
+          <button type="submit" class="btn-primary">Create Task</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Add Vendor -->
+  <div class="modal-overlay" id="vendor-modal" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Record Vendor Quote</h3>
+        <button class="close-btn" onclick="closeModal('vendor-modal')">&times;</button>
+      </div>
+      <form id="add-vendor-form" onsubmit="handleCreateVendor(event)">
+        <div class="form-group">
+          <label>Company / Supplier Name</label>
+          <input type="text" id="modal-vendor-name" required placeholder="e.g. Seattle Gourmet Grain Bowls">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Category</label>
+            <select id="modal-vendor-category">
+              <option value="Catering">Catering</option>
+              <option value="Badges & Swag">Badges & Swag</option>
+              <option value="AV & Tech">AV & Tech</option>
+              <option value="Signage">Signage</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Total Quote ($)</label>
+            <input type="number" step="0.5" id="modal-vendor-amount" required value="950">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Price Per Head ($)</label>
+            <input type="number" step="0.1" id="modal-vendor-perhead" value="11.87">
+          </div>
+          <div class="form-group">
+            <label>Contact Email</label>
+            <input type="email" id="modal-vendor-email" placeholder="orders@supplier.example">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Menu & Dietary Details</label>
+          <textarea id="modal-vendor-details" rows="2" placeholder="Dietary restrictions: Vegan, Nut-Free, Gluten-Free options included."></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" onclick="closeModal('vendor-modal')">Cancel</button>
+          <button type="submit" class="btn-primary">Save Quote</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Add Vendor Requirement -->
+  <div class="modal-overlay" id="req-modal" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Log Vendor Requirement & Unknowns</h3>
+        <button class="close-btn" onclick="closeModal('req-modal')">&times;</button>
+      </div>
+      <form id="add-req-form" onsubmit="handleCreateReq(event)">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Category</label>
+            <select id="modal-req-category">
+              <option value="Catering">Catering</option>
+              <option value="Badges & Signage">Badges & Signage</option>
+              <option value="AV Equipment">AV Equipment</option>
+              <option value="Venue Facility">Venue Facility</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Headcount</label>
+            <input type="number" id="modal-req-headcount" value="80" required>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Specification & Constraints</label>
+          <textarea id="modal-req-spec" rows="2" required placeholder="e.g. 80 individual boxed meals with vegan & gluten-free labels"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Missing Facts / Unknowns to Resolve</label>
+          <textarea id="modal-req-unknowns" rows="2" placeholder="e.g. Exact count of nut-allergic attendees pending RSVP deadline"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" onclick="closeModal('req-modal')">Cancel</button>
+          <button type="submit" class="btn-primary">Record Need</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Persistent Organizer Memory -->
+  <div class="modal-overlay" id="memory-modal" style="display:none;">
+    <div class="modal-card" style="width:640px; max-height:85vh; display:flex; flex-direction:column;">
+      <div class="modal-header">
+        <div>
+          <h3>🧠 Persistent Organizer Memory</h3>
+          <p style="font-size:12px; color:var(--text-secondary); margin-top:3px;">
+            Organizer preferences and constraints saved here persist across all chat sessions and are dynamically injected into Gurt's system instructions.
+          </p>
+        </div>
+        <button class="close-btn" onclick="closeModal('memory-modal')">&times;</button>
+      </div>
+
+      <!-- Add Memory Form -->
+      <form id="add-memory-form" onsubmit="handleSaveMemory(event)" style="background:var(--bg-main); padding:14px; border-radius:var(--radius-md); border:1px solid var(--border-color); margin-bottom:16px;">
+        <div class="form-row">
+          <div class="form-group" style="flex:1;">
+            <label>Memory Key (Identifier)</label>
+            <input type="text" id="mem-input-key" placeholder="e.g. dietary_policy or sponsor_tier" required>
+          </div>
+          <div class="form-group" style="flex:1;">
+            <label>Category</label>
+            <select id="mem-input-category">
+              <option value="preference">Preference</option>
+              <option value="constraint">Constraint</option>
+              <option value="policy">Policy</option>
+              <option value="logistics">Logistics</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Memory Value (Fact/Instruction)</label>
+          <textarea id="mem-input-val" rows="2" placeholder="e.g. Always ensure 15% vegan and nut-free catering. All contracts must be reviewed before 5pm." required></textarea>
+        </div>
+        <div style="display:flex; justify-content:flex-end;">
+          <button type="submit" class="btn-primary" style="padding:6px 16px; font-size:12px;">+ Save to Memory</button>
+        </div>
+      </form>
+
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+        <span style="font-size:12px; font-weight:700; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.05em;">Saved Knowledge Items</span>
+        <span class="badge" id="modal-memory-count">0 items</span>
+      </div>
+
+      <div id="memory-items-container" style="flex:1; overflow-y:auto; max-height:280px; display:flex; flex-direction:column; gap:8px;">
+        <!-- Injected by JS -->
+      </div>
+
+      <div class="modal-actions" style="margin-top:16px;">
+        <button type="button" class="btn-ghost" onclick="closeModal('memory-modal')">Close</button>
+      </div>
+    </div>
+  <!-- Modal: Generate Role-Specific Briefing -->
+  <div class="modal-overlay" id="briefing-modal" style="display:none;">
+    <div class="modal-card" style="width:520px;">
+      <div class="modal-header">
+        <div>
+          <h3>Generate Role-Specific Briefing</h3>
+          <p style="font-size:12px; color:var(--text-secondary); margin-top:3px;">
+            Uses Positive Projection allowlist to compile run-of-show &amp; instructions without leaking private financial/speaker info.
+          </p>
+        </div>
+        <button class="close-btn" onclick="closeModal('briefing-modal')">&times;</button>
+      </div>
+      <form id="add-briefing-form" onsubmit="handleCreateBriefing(event)">
+        <div class="form-group">
+          <label>Target Role</label>
+          <select id="modal-briefing-role" required onchange="handleBriefingRoleChange(this.value)">
+            <option value="speaker">Speaker</option>
+            <option value="vendor">Vendor</option>
+            <option value="volunteer">Volunteer</option>
+          </select>
+        </div>
+        <div class="form-group" id="briefing-participant-group">
+          <label id="modal-briefing-target-label">Specific Participant (Optional)</label>
+          <select id="modal-briefing-target">
+            <option value="">-- All / General Role Packet --</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Security &amp; Projection Policy</label>
+          <div style="background:var(--bg-main); border:1px solid var(--border-color); border-radius:var(--radius-sm); padding:10px; font-size:11.5px; color:var(--text-secondary); line-height:1.4;">
+            🛡️ <strong>Allowlist Enforcement:</strong> Internal budgets, competitor quote pricing, and non-public contact emails are stripped automatically with SHA-256 state fingerprinting.
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" onclick="closeModal('briefing-modal')">Cancel</button>
+          <button type="submit" class="btn-primary">Generate Packet</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
