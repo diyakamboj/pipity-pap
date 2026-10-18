@@ -39,6 +39,11 @@ from briefing_engine import (  # noqa: E402
     list_briefings,
     preview_briefing,
 )
+from conflict_engine import (  # noqa: E402
+    analyze_schedule_impact,
+    detect_schedule_conflicts,
+    propose_conflict_resolutions,
+)
 from seed_data import (  # noqa: E402
     BRIEFINGS,
     EVENT,
@@ -346,6 +351,65 @@ def logistics_check_stale_briefings() -> dict[str, Any]:
     Read-only. Use to identify briefings requiring organizer review and version updates.
     """
     return check_stale_briefings(BACKEND.store)
+
+
+@mcp.tool
+def logistics_detect_conflicts() -> dict[str, Any]:
+    """Detect deterministic schedule, resource, buffer, vendor, and venue conflicts.
+
+    Scans the live event store and identifies:
+    - Room and exclusive resource overlaps (using half-open intervals [start, end)).
+    - Insufficient setup, cleanup, or turnover buffers derived from source records.
+    - Vendor arrival and delivery windows misaligned with service requirements.
+    - Violations of venue operating hours, curfew lock-outs, or maximum capacity.
+    - Missing constraints (e.g. unspecified turnover times or unconfirmed bookings).
+
+    Strictly read-only. Does not mutate the event store or trigger external communications.
+    """
+    return detect_schedule_conflicts(BACKEND.store)
+
+
+@mcp.tool
+def logistics_analyze_impact(
+    schedule_item_id: str,
+    proposed_start: str,
+    proposed_end: str,
+    proposed_room: str = "",
+) -> dict[str, Any]:
+    """Preview the downstream impact of a proposed schedule change without store mutation.
+
+    Evaluates:
+    - Newly introduced vs. resolved conflicts.
+    - Affected operational tasks and dependency chains.
+    - Participant briefings that would become stale (using L2 source fingerprinting).
+    - Directly affected speakers, vendors, volunteers, and downstream agenda items.
+
+    Strictly read-only and preview-only. Never commits changes or alters records.
+    """
+    return analyze_schedule_impact(
+        BACKEND.store,
+        schedule_item_id=schedule_item_id,
+        proposed_start=proposed_start,
+        proposed_end=proposed_end,
+        proposed_room=proposed_room,
+    )
+
+
+@mcp.tool
+def logistics_propose_resolutions(conflict_id: str) -> dict[str, Any]:
+    """Generate deterministic, explainable proposals to resolve a detected conflict.
+
+    Generates safe options (e.g. shifting tentative sessions to open gaps, adjusting
+    vendor arrival windows, or checking alternative confirmed spaces).
+    Each proposal includes:
+    - Before/after field changes
+    - Resolved conflicts and potential secondary impacts
+    - Required external confirmations (speaker agreement, vendor confirmation)
+    - Explicit `requires_human_approval: true`
+
+    Strictly read-only. Never applies changes automatically.
+    """
+    return propose_conflict_resolutions(BACKEND.store, conflict_id=conflict_id)
 
 
 if __name__ == "__main__":
