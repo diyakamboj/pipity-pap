@@ -65,6 +65,7 @@ from gurt.tools.research_tool import tool_web_research
 from gurt.tools.outreach_tools import (
     tool_draft_outreach,
     tool_update_draft,
+    tool_approve_outreach,
     execute_approved_action
 )
 from gurt.tools.pdf_tools import (
@@ -211,6 +212,8 @@ def run_tests():
 
     # 8. Approval Controls & Consequential Execution
     print("\n[8/10] Verifying Approval Execution & Double-Execution Guard...")
+    appr_res = tool_approve_outreach(act_id_1, dispatch_now=False)
+    assert appr_res["status"] == "approved", "Action approval failed"
     exec_res = execute_approved_action(act_id_1)
     assert exec_res["status"] == "executed", "Action execution failed"
     assert "executed_at" in exec_res, "Execution timestamp missing"

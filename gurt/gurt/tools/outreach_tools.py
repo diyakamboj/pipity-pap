@@ -727,14 +727,15 @@ def execute_approved_action(
             "error": f"Cannot dispatch dismissed action {action_id}."
         }
 
-    if require_approved and action["status"] != "approved" and action.get("approval_status") != "approved":
+    # Explicit approval requirement: only persisted 'approved' proposals can be dispatched
+    if action["status"] != "approved" or action.get("approval_status") != "approved":
         return {
-            "error": f"Cannot dispatch action {action_id} in state '{action['status']}'. Action must be explicitly approved before dispatch."
+            "error": f"Cannot execute unapproved action {action_id} in state '{action['status']}'. Explicit organizer approval is required before execution."
         }
 
-    if action["status"] not in ("pending_approval", "approved"):
+    if not action.get("approved_at") or not action.get("approved_by"):
         return {
-            "error": f"Action {action_id} is already in state '{action['status']}'. Only pending actions can be approved."
+            "error": f"Cannot execute action {action_id}: missing persisted approval audit record (approved_at / approved_by)."
         }
 
     now = datetime.now().isoformat()
@@ -745,13 +746,13 @@ def execute_approved_action(
             """
             UPDATE action_proposals
             SET status = 'executing', updated_at = ?
-            WHERE id = ? AND status IN ('pending_approval', 'approved')
+            WHERE id = ? AND status = 'approved'
             """,
             (now, action_id)
         )
         if c.rowcount == 0:
             return {
-                "error": f"Action {action_id} is already in state '{action['status']}'. Only pending actions can be approved."
+                "error": f"Action {action_id} could not be executed: status is not 'approved' or action is already executing/executed."
             }
         conn.commit()
     finally:

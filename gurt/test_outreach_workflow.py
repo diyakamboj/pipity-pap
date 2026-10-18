@@ -200,7 +200,7 @@ class TestOutreachWorkflow(unittest.TestCase):
         # Attempting dispatch directly on pending-approval proposal MUST be rejected
         unapproved_disp = tool_dispatch_approved_action(act_id, event_id=self.event_id)
         self.assertIn("error", unapproved_disp)
-        self.assertIn("must be explicitly approved before dispatch", unapproved_disp["error"])
+        self.assertIn("Explicit organizer approval is required before execution", unapproved_disp["error"])
 
         # Step 2: Explicit approval recorded without immediate dispatch (dispatch_now=False)
         appr_res = tool_approve_outreach(
@@ -237,6 +237,10 @@ class TestOutreachWorkflow(unittest.TestCase):
         )
         act_id = draft["action_id"]
         self.test_actions_to_clean.append(act_id)
+
+        # First approve the draft
+        appr_res = tool_approve_outreach(act_id, event_id=self.event_id, dispatch_now=False)
+        self.assertEqual(appr_res["status"], "approved")
 
         # First execution succeeds
         first_exec = execute_approved_action(act_id, event_id=self.event_id)
@@ -275,6 +279,7 @@ class TestOutreachWorkflow(unittest.TestCase):
         act_id = draft["action_id"]
         self.test_actions_to_clean.append(act_id)
 
+        tool_approve_outreach(act_id, event_id=self.event_id, dispatch_now=False)
         res = execute_approved_action(act_id, force_simulation=True)
         self.assertEqual(res["status"], "executed")
         self.assertEqual(res["delivery_status"], "simulated delivery")
@@ -302,6 +307,7 @@ class TestOutreachWorkflow(unittest.TestCase):
         fail_id = draft_fail["action_id"]
         self.test_actions_to_clean.append(fail_id)
 
+        tool_approve_outreach(fail_id, event_id=self.event_id, dispatch_now=False)
         fail_res = execute_approved_action(fail_id, simulate_failure=True)
         self.assertEqual(fail_res["status"], "failed")
         self.assertEqual(fail_res["delivery_status"], "failed")
@@ -324,6 +330,7 @@ class TestOutreachWorkflow(unittest.TestCase):
         unconf_id = draft_unconf["action_id"]
         self.test_actions_to_clean.append(unconf_id)
 
+        tool_approve_outreach(unconf_id, event_id=self.event_id, dispatch_now=False)
         unconf_res = execute_approved_action(unconf_id, simulate_unconfirmed=True)
         self.assertEqual(unconf_res["delivery_status"], "delivery unconfirmed")
         self.assertFalse(unconf_res["is_real_sent"])
@@ -342,6 +349,8 @@ class TestOutreachWorkflow(unittest.TestCase):
         )
         act_id = draft["action_id"]
         self.test_actions_to_clean.append(act_id)
+
+        tool_approve_outreach(act_id, event_id=self.event_id, dispatch_now=False)
 
         # Temporarily mock a live key
         orig_key = settings.resend_api_key
@@ -396,6 +405,7 @@ class TestOutreachWorkflow(unittest.TestCase):
 
         # Edit and approve
         tool_update_draft(act_id, subject="Persisted Subject Update", actor_id="org_persist")
+        tool_approve_outreach(act_id, event_id=self.event_id, actor_id="org_persist", dispatch_now=False)
         exec_res = execute_approved_action(act_id, event_id=self.event_id, actor_id="org_persist")
         self.assertEqual(exec_res["status"], "executed")
 
@@ -439,6 +449,9 @@ class TestOutreachWorkflow(unittest.TestCase):
         cross_event_edit = tool_update_draft(act_id, subject="Illegal Edit", event_id="evt-other-conference")
         self.assertIn("error", cross_event_edit)
         self.assertIn("not found", cross_event_edit["error"].lower())
+
+        # Approve for self.event_id
+        tool_approve_outreach(act_id, event_id=self.event_id, dispatch_now=False)
 
         # Executing with a different event ID MUST fail
         cross_event_exec = execute_approved_action(act_id, event_id="evt-other-conference")
@@ -563,13 +576,13 @@ class TestOutreachWorkflow(unittest.TestCase):
         # Direct dispatch on pending_approval MUST fail
         tool_pending_disp = tool_dispatch_approved_action(pending_id, event_id=self.event_id)
         self.assertIn("error", tool_pending_disp)
-        self.assertIn("must be explicitly approved before dispatch", tool_pending_disp["error"])
+        self.assertIn("Explicit organizer approval is required before execution", tool_pending_disp["error"])
 
         rest_pending_disp = self.client.post(f"/api/actions/{pending_id}/dispatch", json={
             "event_id": self.event_id
         })
         self.assertEqual(rest_pending_disp.status_code, 400)
-        self.assertIn("must be explicitly approved before dispatch", rest_pending_disp.json()["detail"])
+        self.assertIn("Explicit organizer approval is required before execution", rest_pending_disp.json()["detail"])
 
         # 4. Explicit approval (dispatch_now=False) transitions status to 'approved'
         appr_resp = self.client.post(f"/api/actions/{pending_id}/approve", json={
@@ -611,6 +624,38 @@ class TestOutreachWorkflow(unittest.TestCase):
         })
         self.assertEqual(dup_disp.status_code, 400)
         self.assertIn("already in state 'executed'", dup_disp.json()["detail"])
+
+    def test_14_direct_execute_approved_action_on_unapproved_proposal_fails(self):
+        """Part A Regression Test: Direct lower-level execute_approved_action on unapproved proposal must fail closed with no dispatch."""
+        draft = tool_draft_outreach(
+            recipient_name="Direct Unapproved Target",
+            recipient_email="unapproved.direct@dubhacks-synthetic.test",
+            subject="Direct Unapproved Execution Attempt",
+            message_body="This message must NEVER be dispatched without prior approval.",
+            event_id=self.event_id
+        )
+        act_id = draft["action_id"]
+        self.test_actions_to_clean.append(act_id)
+
+        # Confirm initial state is pending_approval
+        initial_prop = get_action_proposal(act_id, event_id=self.event_id)
+        self.assertEqual(initial_prop["status"], "pending_approval")
+        self.assertEqual(initial_prop["delivery_status"], "pending approval")
+        self.assertIsNone(initial_prop["executed_at"])
+
+        # Directly invoke lower-level execute_approved_action
+        res = execute_approved_action(act_id, event_id=self.event_id)
+
+        # MUST return an error and fail closed
+        self.assertIn("error", res)
+        self.assertIn("Explicit organizer approval is required before execution", res["error"])
+
+        # MUST NOT mutate proposal to executing/executed
+        reloaded = get_action_proposal(act_id, event_id=self.event_id)
+        self.assertEqual(reloaded["status"], "pending_approval")
+        self.assertEqual(reloaded["delivery_status"], "pending approval")
+        self.assertIsNone(reloaded["executed_at"])
+        self.assertIsNone(reloaded["execution_result"])
 
 
 if __name__ == "__main__":

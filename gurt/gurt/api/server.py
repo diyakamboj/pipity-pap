@@ -782,13 +782,27 @@ def generate_schedule_endpoint(event_id: str = Query("evt-dubhacks-2026")) -> li
 
 
 @app.get("/api/pdf/inspect")
-def inspect_pdf_endpoint() -> dict[str, Any]:
-    return inspect_template_fields()
+def inspect_pdf_endpoint(template: str | None = Query(None)) -> dict[str, Any]:
+    try:
+        return inspect_template_fields(template)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/api/pdf/fill")
-def fill_pdf_endpoint(event_id: str = Query("evt-dubhacks-2026")) -> dict[str, Any]:
-    return fill_event_pdf_form(event_id)
+def fill_pdf_endpoint(
+    event_id: str = Query("evt-dubhacks-2026"),
+    template: str | None = Query(None),
+    overwrite: bool = Query(False)
+) -> dict[str, Any]:
+    try:
+        return fill_event_pdf_form(event_id=event_id, template_name_or_path=template, overwrite=overwrite)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/pdf/documents")
@@ -796,15 +810,33 @@ def list_pdf_documents_endpoint(event_id: str = Query("evt-dubhacks-2026")) -> l
     return get_pdf_documents(event_id)
 
 
-@app.get("/api/pdf/download/{filename}")
+@app.get("/api/pdf/download/{filename:path}")
 def download_pdf_endpoint(filename: str) -> FileResponse:
-    file_path = GENERATED_DOCS_DIR / filename
-    if not file_path.exists():
+    if not filename or not isinstance(filename, str):
+        raise HTTPException(status_code=400, detail="Filename is required.")
+    if "\x00" in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename: null byte detected.")
+
+    p = Path(filename)
+    if p.is_absolute() or ".." in p.parts or len(p.parts) > 1 or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Path traversal or invalid filename detected.")
+
+    if p.suffix.lower() != ".pdf":
+        raise HTTPException(status_code=400, detail="Only PDF downloads are allowed.")
+
+    file_path = (GENERATED_DOCS_DIR / p).resolve()
+    try:
+        file_path.relative_to(GENERATED_DOCS_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Path traversal outside generated documents directory detected.")
+
+    if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
+
     return FileResponse(
         str(file_path),
         media_type="application/pdf",
-        filename=filename
+        filename=p.name
     )
 
 

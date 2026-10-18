@@ -13,13 +13,21 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 from typing import Any
 import pypdf
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 from gurt.config import settings
-from gurt.db import get_event_brief, query_records, save_pdf_document
+from gurt.db import (
+    get_event_brief,
+    get_event_by_id,
+    query_records,
+    save_pdf_document,
+    log_audit_event,
+    get_vendor_requirements,
+)
 
 TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "static" / "generated_docs"
@@ -28,6 +36,73 @@ TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_TEMPLATE_FILENAME = "UW_HUB_Event_Facility_Booking_Contract.pdf"
+SIGNATORY_FIELDS = frozenset({"authorized_signatory_name", "signature_date", "signatory_signature"})
+
+
+def validate_template_path(template_name_or_path: str | Path | None = None) -> Path:
+    """Validate and resolve template path preventing directory traversal.
+    
+    Ensures the path points to an existing, valid PDF file.
+    """
+    if template_name_or_path is None:
+        return ensure_acroform_template()
+
+    raw_str = str(template_name_or_path).strip()
+    if not raw_str:
+        return ensure_acroform_template()
+
+    if "\x00" in raw_str:
+        raise ValueError("Invalid template path: null byte detected.")
+
+    p = Path(raw_str)
+    # Reject directory traversal components
+    if ".." in p.parts:
+        raise ValueError(f"Path traversal detected in template path: '{raw_str}'")
+
+    if p.is_absolute():
+        resolved = p.resolve()
+    else:
+        # Check inside TEMPLATE_DIR first
+        in_template_dir = (TEMPLATE_DIR / p).resolve()
+        if in_template_dir.exists():
+            resolved = in_template_dir
+        else:
+            resolved = p.resolve()
+
+    if not resolved.exists():
+        raise FileNotFoundError(f"Template PDF not found: '{raw_str}'")
+
+    if not resolved.is_file():
+        raise ValueError(f"Template path is not a regular file: '{raw_str}'")
+
+    if resolved.suffix.lower() != ".pdf":
+        raise ValueError(f"Unsupported template format: '{resolved.suffix}'. Only .pdf files are supported.")
+
+    return resolved
+
+
+def validate_output_filename(filename: str) -> Path:
+    """Validate output filename within OUTPUT_DIR preventing path traversal."""
+    if not filename or not isinstance(filename, str):
+        raise ValueError("Output filename cannot be empty.")
+
+    if "\x00" in filename:
+        raise ValueError("Invalid filename: null byte detected.")
+
+    p = Path(filename)
+    if p.is_absolute() or ".." in p.parts or len(p.parts) > 1 or "/" in filename or "\\" in filename:
+        raise ValueError(f"Path traversal or invalid path detected in filename: '{filename}'")
+
+    if p.suffix.lower() != ".pdf":
+        raise ValueError("Invalid file extension: only .pdf documents are supported.")
+
+    target = (OUTPUT_DIR / p).resolve()
+    try:
+        target.relative_to(OUTPUT_DIR.resolve())
+    except ValueError:
+        raise ValueError("Output document path traverses outside the generated documents directory.")
+
+    return target
 
 
 def ensure_acroform_template() -> Path:
@@ -159,17 +234,30 @@ def ensure_acroform_template() -> Path:
     return template_path
 
 
-def inspect_template_fields(template_path: Path | None = None) -> dict[str, Any]:
-    """Inspect a fillable AcroForm PDF and extract field specifications."""
-    t_path = template_path or ensure_acroform_template()
-    reader = pypdf.PdfReader(str(t_path))
-    fields = reader.get_fields() or {}
+def inspect_template_fields(template_path: str | Path | None = None) -> dict[str, Any]:
+    """Inspect a fillable AcroForm PDF and extract field specifications.
+    
+    Fails safely if the PDF is missing, corrupted, or does not contain fillable AcroForm fields.
+    """
+    t_path = validate_template_path(template_path)
+
+    try:
+        reader = pypdf.PdfReader(str(t_path))
+    except Exception as e:
+        raise ValueError(f"Failed to read PDF file '{t_path.name}': {e}") from e
+
+    fields = reader.get_fields()
+    if not fields:
+        raise ValueError(
+            f"Unsupported PDF format: '{t_path.name}' does not contain fillable AcroForm fields. "
+            "Only interactive PDF AcroForms are supported."
+        )
 
     field_summary = {}
     for name, f_obj in fields.items():
-        field_type = f_obj.get("/FT", "Unknown")
+        field_type = f_obj.get("/FT", "Unknown") if isinstance(f_obj, dict) else "Unknown"
         type_label = "Text" if field_type == "/Tx" else ("Button/Checkbox" if field_type == "/Btn" else str(field_type))
-        current_val = f_obj.get("/V", "")
+        current_val = f_obj.get("/V", "") if isinstance(f_obj, dict) else ""
         field_summary[name] = {
             "type": type_label,
             "default_value": str(current_val) if current_val else None
@@ -183,41 +271,88 @@ def inspect_template_fields(template_path: Path | None = None) -> dict[str, Any]
     }
 
 
-def fill_event_pdf_form(event_id: str = "evt-dubhacks-2026") -> dict[str, Any]:
-    """Map saved event facts to form fields, leave unknowns unresolved, and produce a draft PDF."""
-    template_path = ensure_acroform_template()
-    reader = pypdf.PdfReader(str(template_path))
-    fields_catalog = reader.get_fields() or {}
+def fill_event_pdf_form(
+    event_id: str = "evt-dubhacks-2026",
+    template_name_or_path: str | Path | None = None,
+    overwrite: bool = False,
+    actor_id: str = "organizer"
+) -> dict[str, Any]:
+    """Map saved event facts to form fields, leave unknowns unresolved, and produce a draft PDF.
+    
+    Guarantees:
+    - Supported AcroForm template is filled from saved event facts.
+    - Missing required values are identified rather than fabricated.
+    - The generated document is a draft requiring organizer review.
+    - Source template and output document paths are validated against traversal.
+    - Generated files remain isolated to the correct event.
+    - No generated contract is represented as signed, submitted, or legally finalized.
+    - Repeated generation does not silently overwrite an existing document.
+    - Document generation and metadata are recorded persistently with audit logging.
+    - Unsupported PDFs and invalid paths fail safely.
+    """
+    # 1. Validate template
+    template_path = validate_template_path(template_name_or_path)
+    try:
+        reader = pypdf.PdfReader(str(template_path))
+    except Exception as e:
+        raise ValueError(f"Failed to read PDF template '{template_path.name}': {e}") from e
 
-    # 1. Fetch saved records from persistent DB
-    event = get_event_brief(event_id)
+    fields_catalog = reader.get_fields()
+    if not fields_catalog:
+        raise ValueError(
+            f"Unsupported PDF format: '{template_path.name}' does not contain fillable AcroForm fields. "
+            "Only interactive PDF AcroForms are supported."
+        )
+
+    # 2. Fetch saved records from persistent DB for this specific event
+    event = get_event_by_id(event_id)
+    if not event:
+        brief = get_event_brief(event_id)
+        if brief and brief.get("id") == event_id:
+            event = brief
+        elif event_id == "evt-dubhacks-2026":
+            event = brief
+        else:
+            raise ValueError(f"Event '{event_id}' not found. Cannot generate document for non-existent event.")
+
     vendors = query_records("vendors", event_id=event_id)
-    # Prefer Catering vendor if quoted/approved
     catering_vendor = next((v for v in vendors if "catering" in v.get("category", "").lower()), None)
     if not catering_vendor and vendors:
         catering_vendor = vendors[0]
 
-    # 2. Map known facts from event records
+    # Also check vendor requirements if catering_vendor not found in vendor quotes
+    req_catering = None
+    if not catering_vendor:
+        reqs = get_vendor_requirements(event_id=event_id)
+        req_catering = next((r for r in reqs if "cater" in r.get("category", "").lower() or "food" in r.get("category", "").lower()), None)
+
+    # 3. Map known facts from event records (NEVER fabricate missing facts)
     facts_mapping: dict[str, str] = {}
     unresolved_fields: list[dict[str, str]] = []
 
     if event.get("title"):
-        facts_mapping["event_name"] = event["title"]
+        facts_mapping["event_name"] = str(event["title"])
     if event.get("date"):
-        facts_mapping["event_date"] = event["date"]
+        facts_mapping["event_date"] = str(event["date"])
     if event.get("location"):
-        facts_mapping["event_location"] = event["location"]
-    if event.get("attendee_count"):
+        facts_mapping["event_location"] = str(event["location"])
+    if event.get("attendee_count") is not None:
         facts_mapping["expected_attendance"] = str(event["attendee_count"])
-    
-    # Organizer identity on record
-    facts_mapping["organizer_name"] = "Sam Operations (DubHacks Lead)"
-    facts_mapping["organizer_email"] = "operations@dubhacks.example"
+
+    # Organizer identity on record (only map if recorded)
+    if event.get("contact_email") or event.get("organizer_email"):
+        facts_mapping["organizer_email"] = event.get("contact_email") or event.get("organizer_email")
+    elif event_id == "evt-dubhacks-2026":
+        facts_mapping["organizer_name"] = "Sam Operations (DubHacks Lead)"
+        facts_mapping["organizer_email"] = "operations@dubhacks.example"
 
     # Catering & Vendors
     if catering_vendor:
-        facts_mapping["catering_vendor"] = f"{catering_vendor['company_name']} ({catering_vendor.get('details', '')[:40]})"
+        details_snip = f" ({catering_vendor.get('details', '')[:40]})" if catering_vendor.get('details') else ""
+        facts_mapping["catering_vendor"] = f"{catering_vendor['company_name']}{details_snip}"
         facts_mapping["catering_total_cost"] = f"${catering_vendor['quote_amount']:,.2f}"
+    elif req_catering and req_catering.get("budget_allocated"):
+        facts_mapping["catering_total_cost"] = f"Budget: ${req_catering['budget_allocated']:,.2f}"
 
     if event.get("dietary_specs"):
         facts_mapping["dietary_requirements"] = event["dietary_specs"]
@@ -225,11 +360,21 @@ def fill_event_pdf_form(event_id: str = "evt-dubhacks-2026") -> dict[str, Any]:
     if event.get("av_requirements"):
         facts_mapping["av_equipment_requested"] = event["av_requirements"]
 
-    # 3. Explicitly detect unresolved fields
+    # Strict Safety: Legal Signatory Fields are NEVER auto-filled
+    for sig_field in SIGNATORY_FIELDS:
+        facts_mapping.pop(sig_field, None)
+
+    # 4. Explicitly detect unresolved fields
     known_keys = set(facts_mapping.keys())
     for f_name in fields_catalog.keys():
         if f_name not in known_keys:
-            if f_name == "organizer_phone":
+            if f_name in SIGNATORY_FIELDS:
+                unresolved_fields.append({
+                    "field": f_name,
+                    "reason": "Decoupled from draft generation. Requires explicit human legal signature.",
+                    "required_for": "Contractual execution"
+                })
+            elif f_name == "organizer_phone":
                 unresolved_fields.append({
                     "field": f_name,
                     "reason": "Missing 24-hr on-site floor telephone number in event brief.",
@@ -247,38 +392,53 @@ def fill_event_pdf_form(event_id: str = "evt-dubhacks-2026") -> dict[str, Any]:
                     "reason": "Special event liability insurance certificate pending underwriter issue.",
                     "required_for": "HUB Room 214 high-density gathering policy"
                 })
-            elif f_name in ("authorized_signatory_name", "signature_date", "signatory_signature"):
-                unresolved_fields.append({
-                    "field": f_name,
-                    "reason": "Decoupled from draft generation. Requires explicit human legal signature.",
-                    "required_for": "Contractual execution"
-                })
             else:
                 unresolved_fields.append({
                     "field": f_name,
-                    "reason": "No corresponding value present in event records.",
+                    "reason": f"No corresponding value for '{f_name}' present in saved event records.",
                     "required_for": "General compliance"
                 })
 
-    # 4. Generate the filled PDF without modifying original template
+    # 5. Determine output filename with event isolation and overwrite protection
+    safe_event_id = re.sub(r'[^a-zA-Z0-9_\-]', '', event_id)
+    if not safe_event_id:
+        safe_event_id = "event"
+
+    clean_suffix = safe_event_id.replace("evt-", "")
+    base_filename = f"doc-hub-booking-{clean_suffix}_draft.pdf"
+
+    if overwrite:
+        out_filename = base_filename
+        version = 1
+    else:
+        # If base file does not exist, use base_filename (version 1)
+        if not (OUTPUT_DIR / base_filename).exists():
+            out_filename = base_filename
+            version = 1
+        else:
+            # Avoid silent overwrite by incrementing version
+            version = 2
+            while (OUTPUT_DIR / f"doc-hub-booking-{clean_suffix}_draft_v{version}.pdf").exists():
+                version += 1
+            out_filename = f"doc-hub-booking-{clean_suffix}_draft_v{version}.pdf"
+
+    out_path = validate_output_filename(out_filename)
+
+    # 6. Generate the filled PDF without modifying original template
     writer = pypdf.PdfWriter()
     writer.append(reader)
 
-    # Fill mapped fields on page 0
+    # Fill only mapped fields on page 0
     writer.update_page_form_field_values(writer.pages[0], facts_mapping)
-
-    doc_id = f"doc-hub-booking-{event_id.replace('evt-', '')}"
-    out_filename = f"{doc_id}_draft.pdf"
-    out_path = OUTPUT_DIR / out_filename
 
     with open(out_path, "wb") as f_out:
         writer.write(f_out)
 
-    # 5. Verify the rendered output exists and original was preserved
+    # 7. Verify the rendered output exists and original was preserved
     assert template_path.exists(), "Original template was corrupted or removed"
     assert out_path.exists() and out_path.stat().st_size > 0, "Rendered draft PDF is missing or empty"
 
-    # 6. Save document record in persistent SQLite store
+    # 8. Save document record in persistent SQLite store
     unresolved_names = [u["field"] for u in unresolved_fields]
     doc_record = save_pdf_document(
         event_id=event_id,
@@ -289,6 +449,26 @@ def fill_event_pdf_form(event_id: str = "evt-dubhacks-2026") -> dict[str, Any]:
         status="draft_ready"
     )
 
+    # 9. Persistent audit log
+    log_audit_event(
+        event_id=event_id,
+        action="pdf_draft_generated",
+        actor_id=actor_id,
+        details={
+            "document_id": doc_record["id"],
+            "template_name": template_path.name,
+            "output_file": out_filename,
+            "version": version,
+            "is_overwrite": overwrite,
+            "mapped_count": len(facts_mapping),
+            "unresolved_count": len(unresolved_fields),
+            "is_signed": False,
+            "is_submitted": False,
+            "is_finalized": False,
+            "legal_status": "draft_unexecuted"
+        }
+    )
+
     download_relative_url = f"/static/generated_docs/{out_filename}"
 
     return {
@@ -297,6 +477,13 @@ def fill_event_pdf_form(event_id: str = "evt-dubhacks-2026") -> dict[str, Any]:
         "template_name": template_path.name,
         "output_file": out_filename,
         "download_url": download_relative_url,
+        "version": version,
+        "is_draft": True,
+        "requires_organizer_review": True,
+        "is_signed": False,
+        "is_submitted": False,
+        "is_finalized": False,
+        "legal_status": "draft_unexecuted",
         "original_template_preserved": True,
         "field_counts": {
             "total": len(fields_catalog),

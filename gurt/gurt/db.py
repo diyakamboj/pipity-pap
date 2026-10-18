@@ -1205,16 +1205,19 @@ def save_pdf_document(
 ) -> dict[str, Any]:
     doc_id = f"pdf-{uuid.uuid4().hex[:6]}"
     conn = get_connection()
-    c = conn.cursor()
-    c.execute("""
-        INSERT INTO pdf_documents (id, event_id, template_name, file_path, mapped_fields, unresolved_fields, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (
-        doc_id, event_id, template_name, file_path,
-        json.dumps(mapped_fields), json.dumps(unresolved_fields), status
-    ))
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        c.execute("""
+            INSERT INTO pdf_documents (id, event_id, template_name, file_path, mapped_fields, unresolved_fields, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            doc_id, event_id, template_name, file_path,
+            json.dumps(mapped_fields), json.dumps(unresolved_fields), status
+        ))
+        conn.commit()
+    finally:
+        conn.close()
+
     return {
         "id": doc_id,
         "event_id": event_id,
@@ -1228,16 +1231,52 @@ def save_pdf_document(
 
 def get_pdf_documents(event_id: str = "evt-dubhacks-2026") -> list[dict[str, Any]]:
     conn = get_connection()
-    c = conn.cursor()
-    c.execute("SELECT * FROM pdf_documents WHERE event_id = ? ORDER BY created_at DESC", (event_id,))
-    rows = [dict(r) for r in c.fetchall()]
+    try:
+        c = conn.cursor()
+        c.execute("SELECT * FROM pdf_documents WHERE event_id = ? ORDER BY created_at DESC", (event_id,))
+        raw_rows = c.fetchall()
+    finally:
+        conn.close()
+
+    rows = [dict(r) for r in raw_rows]
     for r in rows:
         try: r["mapped_fields"] = json.loads(r["mapped_fields"])
         except Exception: pass
         try: r["unresolved_fields"] = json.loads(r["unresolved_fields"])
         except Exception: pass
-    conn.close()
     return rows
+
+
+def get_pdf_document_by_id(doc_id: str, event_id: str | None = None) -> dict[str, Any] | None:
+    conn = get_connection()
+    try:
+        c = conn.cursor()
+        if event_id:
+            c.execute("SELECT * FROM pdf_documents WHERE id = ? AND event_id = ? LIMIT 1", (doc_id, event_id))
+        else:
+            c.execute("SELECT * FROM pdf_documents WHERE id = ? LIMIT 1", (doc_id,))
+        row = c.fetchone()
+        if not row:
+            return None
+        doc = dict(row)
+        try: doc["mapped_fields"] = json.loads(doc["mapped_fields"])
+        except Exception: pass
+        try: doc["unresolved_fields"] = json.loads(doc["unresolved_fields"])
+        except Exception: pass
+        return doc
+    finally:
+        conn.close()
+
+
+def get_event_by_id(event_id: str) -> dict[str, Any] | None:
+    conn = get_connection()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT * FROM events WHERE id = ? LIMIT 1", (event_id,))
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def get_event_summary(event_id: str = "evt-dubhacks-2026") -> dict[str, Any]:
