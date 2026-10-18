@@ -254,6 +254,73 @@ class AuditEvent:
         )
 
 
+class ProposalStatus(str, Enum):
+    """Lifecycle states for resolution proposals."""
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+
+
+@dataclass
+class ProposalRecord:
+    id: str
+    event_id: str
+    target_schedule_id: str
+    proposed_changes: list[dict[str, Any]]
+    title: str = ""
+    description: str = ""
+    strategy: str = "RESCHEDULE_SESSION"
+    conflict_id: Optional[str] = None
+    baseline_fingerprint: str = ""
+    created_at: str = ""
+    expires_at: str = ""
+    status: str = ProposalStatus.PENDING.value
+    rejection_reason: str = ""
+    resolved_at: str = ""
+    resolved_by: str = ""
+    resolves_conflicts: list[str] = field(default_factory=list)
+    potential_new_conflicts: list[str] = field(default_factory=list)
+    downstream_task_impacts: list[str] = field(default_factory=list)
+    downstream_briefing_impacts: list[str] = field(default_factory=list)
+    required_confirmations: list[str] = field(default_factory=list)
+    affects_confirmed_commitments: bool = False
+    requires_human_approval: bool = True
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ProposalRecord:
+        return cls(
+            id=data["id"],
+            event_id=data.get("event_id", "evt-001"),
+            target_schedule_id=data.get("target_schedule_id", ""),
+            proposed_changes=list(data.get("proposed_changes", [])),
+            title=data.get("title", ""),
+            description=data.get("description", ""),
+            strategy=data.get("strategy", "RESCHEDULE_SESSION"),
+            conflict_id=data.get("conflict_id"),
+            baseline_fingerprint=data.get("baseline_fingerprint", ""),
+            created_at=data.get("created_at", ""),
+            expires_at=data.get("expires_at", ""),
+            status=data.get("status", ProposalStatus.PENDING.value),
+            rejection_reason=data.get("rejection_reason", ""),
+            resolved_at=data.get("resolved_at", ""),
+            resolved_by=data.get("resolved_by", ""),
+            resolves_conflicts=list(data.get("resolves_conflicts", [])),
+            potential_new_conflicts=list(data.get("potential_new_conflicts", [])),
+            downstream_task_impacts=list(data.get("downstream_task_impacts", [])),
+            downstream_briefing_impacts=list(data.get("downstream_briefing_impacts", [])),
+            required_confirmations=list(data.get("required_confirmations", [])),
+            affects_confirmed_commitments=bool(data.get("affects_confirmed_commitments", False)),
+            requires_human_approval=bool(data.get("requires_human_approval", True)),
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+
 # ---------------------------------------------------------------------------
 # Persistent Event Store Implementation
 # ---------------------------------------------------------------------------
@@ -495,6 +562,7 @@ class EventStore:
                     "schedule": copy.deepcopy(SCHEDULE_ITEMS),
                     "briefings": copy.deepcopy(BRIEFINGS),
                     "audit_trail": [],
+                    "proposals": [],
                 }
                 self._save_under_lock()
 
@@ -512,6 +580,7 @@ class EventStore:
             "schedule": copy.deepcopy(SCHEDULE_ITEMS),
             "briefings": copy.deepcopy(BRIEFINGS),
             "audit_trail": [],
+            "proposals": [],
         }
         for key, val in defaults.items():
             if key not in data or data[key] is None:
@@ -931,14 +1000,30 @@ class EventStore:
                     return copy.deepcopy(entry)
             return None
 
-    def find_audit_by_proposal(self, proposal_id: str) -> dict[str, Any] | None:
-        """Find the audit record for a given proposal ID (used for idempotency and duplicate rejection)."""
+    def find_audit_by_proposal(
+        self, proposal_id: str, action_type: str | None = None
+    ) -> dict[str, Any] | None:
+        """Find an audit record for a given proposal ID (optionally filtered by action_type).
+
+        Returns the latest matching entry (most recent lifecycle transition), or None.
+        """
         with self._lock:
             self._ensure_fresh()
-            for entry in self._data.get("audit_trail", []):
+            for entry in reversed(self._data.get("audit_trail", [])):
                 if entry.get("proposal_id") == proposal_id:
-                    return copy.deepcopy(entry)
+                    if action_type is None or entry.get("action_type") == action_type:
+                        return copy.deepcopy(entry)
             return None
+
+    def find_audits_by_proposal(self, proposal_id: str) -> list[dict[str, Any]]:
+        """Return all audit records for a given proposal ID in chronological order."""
+        with self._lock:
+            self._ensure_fresh()
+            return [
+                copy.deepcopy(entry)
+                for entry in self._data.get("audit_trail", [])
+                if entry.get("proposal_id") == proposal_id
+            ]
 
     def record_audit_event(self, event: dict[str, Any] | AuditEvent) -> dict[str, Any]:
         """Append an audit event to the audit trail and persist atomically.
@@ -956,6 +1041,56 @@ class EventStore:
                 self._data["version"] = int(self._data.get("version", 0)) + 1
                 self._save_under_lock()
                 return copy.deepcopy(evt_dict)
+
+    # -----------------------------------------------------------------------
+    # Proposal Registry (Durable Server-Owned HITL Proposals)
+    # -----------------------------------------------------------------------
+    def all_proposals(self) -> list[dict[str, Any]]:
+        """Return all persisted resolution proposals (read-only copy)."""
+        with self._lock:
+            self._ensure_fresh()
+            return copy.deepcopy(self._data.get("proposals", []))
+
+    def find_proposal(self, proposal_id: str) -> dict[str, Any] | None:
+        """Find a specific resolution proposal by its proposal ID."""
+        with self._lock:
+            self._ensure_fresh()
+            for p in self._data.get("proposals", []):
+                if p.get("id") == proposal_id:
+                    return copy.deepcopy(p)
+            return None
+
+    def add_proposal(self, proposal: dict[str, Any] | ProposalRecord) -> dict[str, Any]:
+        """Persist a new proposal into the proposal registry atomically under lock."""
+        p_dict = proposal.to_dict() if isinstance(proposal, ProposalRecord) else copy.deepcopy(proposal)
+        p_id = p_dict.get("id")
+        if not p_id:
+            raise ValueError("Proposal must have a valid non-empty 'id'.")
+        with self._lock:
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                if "proposals" not in self._data:
+                    self._data["proposals"] = []
+                for existing in self._data["proposals"]:
+                    if existing.get("id") == p_id:
+                        raise ValueError(f"Proposal with id '{p_id}' already exists.")
+                self._data["proposals"].append(p_dict)
+                self._data["version"] = int(self._data.get("version", 0)) + 1
+                self._save_under_lock()
+                return copy.deepcopy(p_dict)
+
+    def update_proposal(self, proposal_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+        """Update fields of an existing proposal in the registry under lock."""
+        with self._lock:
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                for p in self._data.get("proposals", []):
+                    if p.get("id") == proposal_id:
+                        p.update(updates)
+                        self._data["version"] = int(self._data.get("version", 0)) + 1
+                        self._save_under_lock()
+                        return copy.deepcopy(p)
+                return None
 
 
 # ---------------------------------------------------------------------------
