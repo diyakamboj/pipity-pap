@@ -34,6 +34,11 @@ from logistics_engine import (  # noqa: E402
     generate_operational_tasks,
     get_task_board,
 )
+from briefing_engine import (  # noqa: E402
+    check_stale_briefings,
+    list_briefings,
+    preview_briefing,
+)
 from seed_data import (  # noqa: E402
     BRIEFINGS,
     EVENT,
@@ -300,6 +305,47 @@ def logistics_task_board(
         filter_owner=filter_owner,
         filter_status=filter_status,
     )
+
+
+@mcp.tool
+def logistics_preview_briefing(role: str, recipient_id: str = "") -> dict[str, Any]:
+    """Generate a permission-scoped, versioned briefing draft for a participant.
+
+    Supports role-specific briefings:
+    - 'speaker': Session times, recommended arrival, stage AV provisions, emergency contact,
+      and unconfirmed slot/title requirements. (Excludes vendor quotes and financial terms).
+    - 'vendor': Service window, delivery arrival, loading dock rules, food policies, headcount,
+      and booking confirmations. (Excludes private speaker contacts and competitor quotes).
+    - 'volunteer': Role shift, check-in lobby, operational checklist, and escalation contact.
+      (Excludes confidential vendor quotes, speaker personal contacts, and sponsor amounts).
+
+    Strictly read-only and preview-only. Never sends emails or modifies the store.
+    """
+    return preview_briefing(BACKEND.store, role=role, recipient_id=recipient_id)
+
+
+@mcp.tool
+def logistics_list_briefings(role: str = "") -> dict[str, Any]:
+    """List stored participant briefings with active staleness detection.
+
+    Optionally filter by role ('speaker', 'vendor', 'volunteer').
+    Pass empty string to return all briefings across all roles.
+
+    Read-only. Use to review briefing statuses and render summary lists on Canvas.
+    """
+    return list_briefings(BACKEND.store, role=role)
+
+
+@mcp.tool
+def logistics_check_stale_briefings() -> dict[str, Any]:
+    """Audit all stored participant briefings against current live event records.
+
+    Detects if underlying schedules, speaker availability, vendor commitments,
+    or venue constraints have changed since each briefing draft was created.
+
+    Read-only. Use to identify briefings requiring organizer review and version updates.
+    """
+    return check_stale_briefings(BACKEND.store)
 
 
 if __name__ == "__main__":

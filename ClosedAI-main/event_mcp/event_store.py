@@ -165,7 +165,15 @@ class Briefing:
     emergency_contact: str = ""
     is_stale: bool = False
     version: int = 1
-    confirmation_state: str = ConfirmationState.CONFIRMED.value
+    confirmation_state: str = ConfirmationState.TENTATIVE.value
+    status: str = "draft"
+    source_fingerprint: str = ""
+    source_records: list[str] = field(default_factory=list)
+    missing_details: list[str] = field(default_factory=list)
+    content: dict[str, Any] = field(default_factory=dict)
+    history: list[dict[str, Any]] = field(default_factory=list)
+    created_at: str = ""
+    updated_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -188,7 +196,15 @@ class Briefing:
             emergency_contact=data.get("emergency_contact", ""),
             is_stale=bool(data.get("is_stale", False)),
             version=int(data.get("version", 1)),
-            confirmation_state=data.get("confirmation_state", ConfirmationState.CONFIRMED.value),
+            confirmation_state=data.get("confirmation_state", ConfirmationState.TENTATIVE.value),
+            status=data.get("status", "draft"),
+            source_fingerprint=data.get("source_fingerprint", ""),
+            source_records=list(data.get("source_records", [])),
+            missing_details=list(data.get("missing_details", [])),
+            content=dict(data.get("content", {})),
+            history=list(data.get("history", [])),
+            created_at=data.get("created_at", ""),
+            updated_at=data.get("updated_at", ""),
         )
 
 
@@ -556,10 +572,73 @@ class EventStore:
         with self._lock:
             for b in self._data["briefings"]:
                 if b["id"] == briefing_id:
+                    # Guard sent briefings against accidental in-place mutation of content
+                    if b.get("status") == "sent":
+                        immutable_fields = (
+                            "content",
+                            "rendered_body",
+                            "session_time",
+                            "arrival_time",
+                            "av_provisions",
+                            "notes",
+                        )
+                        if any(k in updates for k in immutable_fields):
+                            raise ValueError(
+                                f"Briefing '{briefing_id}' has already been marked as 'sent' and is immutable. "
+                                "Use upsert_briefing_version to archive the sent version and create a revised draft."
+                            )
                     b.update(updates)
                     self.save()
                     return copy.deepcopy(b)
         return None
+
+    def find_briefing_by_recipient(self, role: str, recipient_id: str) -> dict[str, Any] | None:
+        """Find the active briefing for a specific role and recipient ID."""
+        with self._lock:
+            for b in self._data["briefings"]:
+                if b.get("role", "").lower() == role.lower() and b.get("recipient_id", "").lower() == recipient_id.lower():
+                    return copy.deepcopy(b)
+        return None
+
+    def upsert_briefing_version(self, briefing: dict[str, Any] | Briefing) -> dict[str, Any]:
+        """Insert or version-update a briefing, preserving sent versions and history."""
+        b_dict = briefing.to_dict() if isinstance(briefing, Briefing) else copy.deepcopy(briefing)
+        b_id = b_dict["id"]
+        with self._lock:
+            for idx, existing in enumerate(self._data["briefings"]):
+                if existing["id"] == b_id:
+                    # Found existing briefing
+                    history = list(existing.get("history", []))
+                    current_status = existing.get("status", "draft")
+
+                    # Archive current revision into history
+                    snapshot = {
+                        "version": existing.get("version", 1),
+                        "status": current_status,
+                        "archived_at": b_dict.get("updated_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "source_fingerprint": existing.get("source_fingerprint", ""),
+                        "notes": existing.get("notes", ""),
+                    }
+                    history.append(snapshot)
+
+                    # If previously sent, do NOT silently overwrite: increment version and return to draft
+                    if current_status == "sent":
+                        b_dict["version"] = existing.get("version", 1) + 1
+                        b_dict["status"] = "draft"
+                    else:
+                        # For existing draft, increment version if source fingerprint changed
+                        if existing.get("source_fingerprint") and b_dict.get("source_fingerprint") != existing.get("source_fingerprint"):
+                            b_dict["version"] = existing.get("version", 1) + 1
+
+                    b_dict["history"] = history
+                    self._data["briefings"][idx] = b_dict
+                    self.save()
+                    return copy.deepcopy(b_dict)
+
+            # Not found: new briefing
+            self._data["briefings"].append(b_dict)
+            self.save()
+            return copy.deepcopy(b_dict)
 
 
 # ---------------------------------------------------------------------------
