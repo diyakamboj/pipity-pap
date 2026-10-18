@@ -40,6 +40,7 @@ from runtime.server.init_router import (
     require_initialized,
 )
 from runtime.server.llm_router import llm_router
+from runtime.server.logistics_router import logistics_router
 from runtime.server.mcp_router import mcp_router
 from runtime.server.middleware import CORSDispatcher
 from runtime.integrations.openai.router import (
@@ -392,6 +393,7 @@ def _add_api_routes(app: FastAPI) -> None:
     # /api/auth/* mints workspace cookies and requires the header to bootstrap,
     # so it lives under the header-only auth group.
     api_router.include_router(auth_router)
+    api_router.include_router(logistics_router)
     app.include_router(api_router)
 
     app.include_router(openai_router, dependencies=[Depends(check_openai_api_key)])
