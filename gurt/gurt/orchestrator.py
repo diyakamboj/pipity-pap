@@ -36,6 +36,7 @@ from gurt.tools.event_tools import (
     tool_discover_vendor_needs,
     tool_compare_vendor_quotes,
     tool_verify_vendor_compliance,
+    tool_select_vendor_proposal,
     tool_lookup_sponsors,
     tool_save_sponsor_candidate,
     tool_lookup_tasks,
@@ -51,6 +52,8 @@ from gurt.tools.outreach_tools import (
     tool_draft_slack_message,
     tool_draft_teams_message,
     tool_update_draft,
+    tool_approve_outreach,
+    tool_dispatch_approved_action,
     tool_process_outreach_reply,
     tool_record_sponsor_commitment,
     tool_check_outreach_followups
@@ -64,7 +67,9 @@ from gurt.tools.logistics_tools import (
     tool_preview_schedule_change,
     tool_generate_role_briefing,
     tool_get_role_briefings,
-    tool_build_precision_run_of_show
+    tool_build_precision_run_of_show,
+    tool_propose_conflict_resolutions,
+    tool_apply_conflict_resolution
 )
 
 
@@ -484,6 +489,78 @@ GEMINI_TOOLS = [
                     },
                     "required": ["session_id", "proposed_changes"]
                 }
+            },
+            {
+                "name": "propose_conflict_resolutions",
+                "description": "Generate explainable, non-hallucinated schedule resolution proposals for detected conflicts.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "conflict_id": {"type": "string", "description": "Optional specific conflict ID"}
+                    }
+                }
+            },
+            {
+                "name": "apply_conflict_resolution",
+                "description": "Apply a proposed schedule conflict resolution after explicit organizer confirmation.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": {"type": "string", "description": "Target schedule session ID"},
+                        "proposed_changes": {"type": "object", "description": "Dictionary of proposed changes (e.g. start_time, end_time, room)"},
+                        "expected_fingerprint": {"type": "string", "description": "Concurrency fingerprint expected on session"},
+                        "conflict_id": {"type": "string", "description": "Optional conflict ID being resolved"}
+                    },
+                    "required": ["session_id", "proposed_changes", "expected_fingerprint"]
+                }
+            },
+            {
+                "name": "select_vendor_proposal",
+                "description": "Record organizer preference by marking a vendor proposal as preferred. Does NOT make any booking, contract, or payment.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "vendor_id": {"type": "string", "description": "Vendor ID to mark preferred"},
+                        "selection_notes": {"type": "string", "description": "Organizer rationale or selection notes"}
+                    },
+                    "required": ["vendor_id"]
+                }
+            },
+            {
+                "name": "approve_outreach",
+                "description": "Record organizer human approval for a pending outreach draft in the Action Center. Optionally dispatches simulated delivery.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action_id": {"type": "string", "description": "Action proposal ID to approve"},
+                        "dispatch_now": {"type": "boolean", "description": "Whether to immediately dispatch after approval (default true)"}
+                    },
+                    "required": ["action_id"]
+                }
+            },
+            {
+                "name": "dispatch_approved_action",
+                "description": "Dispatch an outreach draft that has already been explicitly approved. Never dispatches unapproved drafts.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action_id": {"type": "string", "description": "Approved action proposal ID to dispatch"}
+                    },
+                    "required": ["action_id"]
+                }
+            },
+            {
+                "name": "update_outreach_draft",
+                "description": "Edit the subject or message body of an existing pending outreach proposal in the Action Center.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action_id": {"type": "string", "description": "Action ID of the proposal to edit"},
+                        "subject": {"type": "string", "description": "Updated subject line"},
+                        "message_body": {"type": "string", "description": "Updated body text"}
+                    },
+                    "required": ["action_id", "subject", "message_body"]
+                }
             }
         ]
     }
@@ -658,6 +735,49 @@ def dispatch_tool(name: str, args: dict[str, Any], event_id: str = "evt-dubhacks
             proposed_changes=args.get("proposed_changes", {}),
             event_id=event_id
         )
+    elif name == "propose_conflict_resolutions":
+        return tool_propose_conflict_resolutions(
+            conflict_id=args.get("conflict_id"),
+            event_id=event_id
+        )
+    elif name == "apply_conflict_resolution":
+        return tool_apply_conflict_resolution(
+            event_id=event_id,
+            session_id=args.get("session_id", ""),
+            proposed_changes=args.get("proposed_changes", {}),
+            expected_fingerprint=args.get("expected_fingerprint", ""),
+            conflict_id=args.get("conflict_id")
+        )
+    elif name == "select_vendor_proposal":
+        return tool_select_vendor_proposal(
+            vendor_id=args.get("vendor_id", ""),
+            event_id=event_id,
+            selection_notes=args.get("selection_notes", ""),
+            actor_id=args.get("actor_id", "organizer")
+        )
+    elif name == "approve_outreach":
+        return tool_approve_outreach(
+            action_id=args.get("action_id", ""),
+            event_id=event_id,
+            actor_id=args.get("actor_id", "organizer"),
+            dispatch_now=args.get("dispatch_now", True),
+            force_simulation=args.get("force_simulation", True)
+        )
+    elif name == "dispatch_approved_action":
+        return tool_dispatch_approved_action(
+            action_id=args.get("action_id", ""),
+            event_id=event_id,
+            actor_id=args.get("actor_id", "organizer"),
+            force_simulation=args.get("force_simulation", True)
+        )
+    elif name == "update_outreach_draft":
+        return tool_update_draft(
+            action_id=args.get("action_id", ""),
+            subject=args.get("subject", ""),
+            message_body=args.get("message_body", ""),
+            event_id=event_id,
+            actor_id=args.get("actor_id", "organizer")
+        )
     return {"error": f"Unknown tool: {name}"}
 
 
@@ -735,6 +855,83 @@ def format_tool_execution_response(executed_tools: list[dict[str, Any]], event_i
             f"- **Scale:** {ev.get('attendee_count')} attendees | Budget: ${ev.get('budget', 0):,.2f}\n"
             f"- **Progress:** {ov.get('speakers')} | {ov.get('tasks')}"
         )
+
+    if "propose_conflict_resolutions" in tool_names:
+        for et in executed_tools:
+            if et.get("tool") == "propose_conflict_resolutions":
+                res = et.get("output", {})
+                props = res.get("proposals", [])
+                if not props:
+                    return f"✅ **No active conflict resolutions needed** for {res.get('event_title', 'this event')}."
+                p_lines = [f"- **Proposal:** Shift `{p.get('session_id')}` to `{p.get('proposed_changes', {}).get('start_time')}-{p.get('proposed_changes', {}).get('end_time')}`\n  *Rationale:* {p.get('rationale')}\n  *Action:* Requires organizer confirmation to apply." for p in props]
+                return f"💡 **Proposed Conflict Resolutions ({len(props)}):**\n\n" + "\n\n".join(p_lines)
+
+    if "apply_conflict_resolution" in tool_names:
+        for et in executed_tools:
+            if et.get("tool") == "apply_conflict_resolution":
+                res = et.get("output", {})
+                if res.get("status") == "error":
+                    return f"❌ **Conflict Resolution Failed:** {res.get('message', res.get('error'))}"
+                return (
+                    f"✅ **Schedule Conflict Resolution Applied!**\n\n"
+                    f"- **Session ID:** `{res.get('session_id')}`\n"
+                    f"- **New Time:** `{res.get('new_time_slot')}`\n"
+                    f"- **New Room:** `{res.get('new_location')}`\n"
+                    f"- **Remaining Conflicts:** {res.get('remaining_conflicts_count', 0)}\n\n"
+                    f"Schedule updated and audit trail recorded."
+                )
+
+    if "select_vendor_proposal" in tool_names:
+        for et in executed_tools:
+            if et.get("tool") == "select_vendor_proposal":
+                res = et.get("output", {})
+                if "error" in res:
+                    return f"❌ **Vendor Selection Failed:** {res.get('error')}"
+                return (
+                    f"⭐ **Preferred Vendor Selection Recorded!**\n\n"
+                    f"- **Vendor:** **{res.get('company_name')}** (`{res.get('vendor_id')}`)\n"
+                    f"- **Category:** {res.get('category')} | **Status:** `{res.get('status')}`\n"
+                    f"- **Estimated Quote:** ${res.get('quote_amount', 0):,.2f}\n"
+                    f"- **Organizer Notes:** {res.get('selection_notes') or 'Selected as preferred option.'}\n\n"
+                    f"🛡️ **Safety Reminder:** {res.get('warning', 'Vendor proposal selected. No external booking, contract signature, or payment has been made.')}"
+                )
+
+    if "approve_outreach" in tool_names:
+        for et in executed_tools:
+            if et.get("tool") == "approve_outreach":
+                res = et.get("output", {})
+                if "error" in res:
+                    return f"❌ **Approval Failed:** {res.get('error')}"
+                sim_note = f"\n- **Delivery:** {res.get('delivery_status')}" if res.get('delivery_status') else ""
+                return (
+                    f"✅ **Outreach Proposal Approved!**\n\n"
+                    f"- **Action ID:** `{res.get('id')}`\n"
+                    f"- **Title:** {res.get('title')}\n"
+                    f"- **Status:** `{res.get('status')}`{sim_note}\n\n"
+                    f"Audit event logged. If configured for simulation, no real emails were sent."
+                )
+
+    if "dispatch_approved_action" in tool_names:
+        for et in executed_tools:
+            if et.get("tool") == "dispatch_approved_action":
+                res = et.get("output", {})
+                if "error" in res:
+                    return f"❌ **Dispatch Failed:** {res.get('error')}"
+                return (
+                    f"🚀 **Action Dispatched (Simulated)!**\n\n"
+                    f"- **Action ID:** `{res.get('action_id')}`\n"
+                    f"- **Delivery Status:** `{res.get('delivery_status')}`\n"
+                    f"- **Recipient:** {res.get('recipient_email', 'On file')}\n\n"
+                    f"🛡️ **Safety Note:** {res.get('warning', 'SIMULATION MODE: Message dispatched locally; no live external email delivered.')}"
+                )
+
+    if "update_outreach_draft" in tool_names:
+        for et in executed_tools:
+            if et.get("tool") == "update_outreach_draft":
+                res = et.get("output", {})
+                if "error" in res:
+                    return f"❌ **Draft Update Failed:** {res.get('error')}"
+                return f"✏️ **Outreach Draft Updated!** `{res.get('action_id')}` has been edited and is ready for approval in the Action Center."
 
     lines = [f"- **{et['tool']}**: `{json.dumps(et['output'])[:120]}...`" for et in executed_tools]
     return "I executed the requested operations:\n\n" + "\n".join(lines)
@@ -926,6 +1123,43 @@ def dynamic_semantic_executor(
             "model_used": "gurt-semantic-engine"
         }
 
+    # 0e-2. Select Preferred Vendor Proposal
+    if any(k in msg_lower for k in ["select vendor", "select preferred", "prefer vendor", "choose vendor", "make preferred", "set preferred", "pick vendor"]):
+        vendors = tool_lookup_vendors(event_id=event_id)
+        target_v = None
+        for v in vendors:
+            v_name = v.get("company_name", "").lower()
+            if v_name in msg_lower or any(word in msg_lower for word in v_name.split() if len(word) > 4):
+                target_v = v
+                break
+        if not target_v and vendors:
+            target_v = vendors[0]
+        if target_v:
+            res = tool_select_vendor_proposal(
+                vendor_id=target_v["id"],
+                event_id=event_id,
+                selection_notes=f"Selected {target_v['company_name']} via agent console.",
+                actor_id="organizer"
+            )
+            executed_tools.append({"tool": "select_vendor_proposal", "output": res})
+            return {
+                "text": (
+                    f"⭐ **Preferred Vendor Selection Recorded!**\n\n"
+                    f"- **Vendor:** **{res.get('company_name')}** (`{res.get('vendor_id')}`)\n"
+                    f"- **Category:** {res.get('category')} | **Status:** `{res.get('status')}`\n"
+                    f"- **Estimated Quote:** ${res.get('quote_amount', 0):,.2f}\n"
+                    f"- **Organizer Note:** {res.get('selection_notes')}\n\n"
+                    f"🛡️ **Safety Guardrail:** {res.get('warning', 'Vendor proposal selected. No external booking, contract signature, or payment has been made.')}"
+                ),
+                "tool_calls": executed_tools,
+                "model_used": "gurt-semantic-engine"
+            }
+        return {
+            "text": "No vendor quotes found to select. Please add vendor quotes first with *'Add a vendor quote for...'*",
+            "tool_calls": [],
+            "model_used": "gurt-semantic-engine"
+        }
+
     # 0f. Verify Vendor Compliance (V2)
     if any(k in msg_lower for k in ["verify vendor", "compliance", "license check", "vendor compliance", "food safety"]):
         # Extract vendor name from message
@@ -1003,6 +1237,23 @@ def dynamic_semantic_executor(
             "model_used": "gurt-semantic-engine"
         }
 
+    # 1a. Inspect PDF Template
+    if any(k in msg_lower for k in ["inspect pdf", "inspect template", "template fields", "inspect form"]):
+        insp = inspect_template_fields()
+        executed_tools.append({"tool": "inspect_template_fields", "output": insp})
+        f_lines = [f"- **{f['field_name']}** ({f['field_type']}): `{f.get('default_value', '')}`" for f in insp.get("form_fields", [])[:8]]
+        return {
+            "text": (
+                f"📑 **PDF Template Inspection: `{insp.get('template_name')}`**\n\n"
+                f"- **AcroForm Enabled:** {'✅ Yes' if insp.get('is_acroform') else '❌ No'}\n"
+                f"- **Total Fillable Fields:** {insp.get('field_count', 0)}\n\n"
+                f"**Key Form Fields:**\n" + "\n".join(f_lines) +
+                f"\n\n*Run 'Fill out contract PDF' to map saved event facts into a downloadable draft.*"
+            ),
+            "tool_calls": executed_tools,
+            "model_used": "gurt-semantic-engine"
+        }
+
     # 1. PDF Form Filling
     if any(k in msg_lower for k in ["pdf", "form", "contract", "booking sheet", "fill form"]):
         pdf_res = fill_event_pdf_form(event_id)
@@ -1022,7 +1273,57 @@ def dynamic_semantic_executor(
             "model_used": "gurt-semantic-engine"
         }
 
-    # 1b. Schedule & Room Conflict Detection
+    # 1b. Schedule & Room Conflict Resolution
+    if any(k in msg_lower for k in ["apply resolution", "apply conflict fix", "resolve conflict", "apply proposed change", "confirm resolution"]):
+        props_res = tool_propose_conflict_resolutions(event_id=event_id)
+        props = props_res.get("proposals", [])
+        if not props:
+            return {"text": f"No active conflict proposals to apply for {props_res.get('event_title', 'this event')}.", "tool_calls": [], "model_used": "gurt-semantic-engine"}
+        p = props[0]
+        applied = tool_apply_conflict_resolution(
+            event_id=event_id,
+            session_id=p.get("session_id", ""),
+            proposed_changes=p.get("proposed_changes", {}),
+            expected_fingerprint=p.get("expected_fingerprint", ""),
+            conflict_id=p.get("conflict_id")
+        )
+        executed_tools.append({"tool": "apply_conflict_resolution", "output": applied})
+        if applied.get("status") == "error":
+            return {"text": f"❌ Resolution failed: {applied.get('message', applied.get('error'))}", "tool_calls": executed_tools, "model_used": "gurt-semantic-engine"}
+        return {
+            "text": (
+                f"✅ **Schedule Conflict Resolution Applied!**\n\n"
+                f"- **Session ID:** `{applied.get('session_id')}`\n"
+                f"- **New Time Slot:** `{applied.get('new_time_slot')}`\n"
+                f"- **New Room:** `{applied.get('new_location')}`\n"
+                f"- **Remaining Conflicts:** {applied.get('remaining_conflicts_count', 0)}\n\n"
+                f"Organizer confirmation recorded in audit log. Schedule updated."
+            ),
+            "tool_calls": executed_tools,
+            "model_used": "gurt-semantic-engine"
+        }
+
+    if any(k in msg_lower for k in ["propose resolution", "conflict proposal", "how to resolve", "suggest resolution", "suggest fix", "fix the conflict", "fix conflict"]):
+        props_res = tool_propose_conflict_resolutions(event_id=event_id)
+        executed_tools.append({"tool": "propose_conflict_resolutions", "output": props_res})
+        props = props_res.get("proposals", [])
+        if not props:
+            return {"text": f"✅ No active schedule conflicts or resolution proposals needed for **{props_res.get('event_title', 'this event')}**.", "tool_calls": executed_tools, "model_used": "gurt-semantic-engine"}
+        p_lines = [
+            f"- **Proposal for `{p['session_id']}`:** Shift to `{p['proposed_changes'].get('start_time')}-{p['proposed_changes'].get('end_time')}`\n"
+            f"  *Rationale:* {p['rationale']}\n"
+            f"  *Fingerprint:* `{p['expected_fingerprint'][:10]}...`"
+            for p in props
+        ]
+        return {
+            "text": (
+                f"💡 **Proposed Conflict Resolutions ({len(props)}):**\n\n" + "\n\n".join(p_lines) +
+                f"\n\nTo apply this resolution, say *'Apply proposed conflict resolution'* or use the Run-of-Show conflict banner."
+            ),
+            "tool_calls": executed_tools,
+            "model_used": "gurt-semantic-engine"
+        }
+
     if any(k in msg_lower for k in ["conflict", "conflicts", "overlap", "room overlap", "double book", "buffer check"]):
         conf_res = tool_detect_schedule_conflicts(event_id)
         executed_tools.append({"tool": "detect_schedule_conflicts", "output": conf_res})
@@ -1072,6 +1373,77 @@ def dynamic_semantic_executor(
                 "\n\nThis schedule integrates our setup, keynote, hands-on tracks, catered lunch, and teardown."
             ),
             "tool_calls": executed_tools,
+            "model_used": "gurt-semantic-engine"
+        }
+
+    # 3a. Outreach Approval & Dispatch
+    if any(k in msg_lower for k in ["approve outreach", "approve draft", "approve invite", "approve action", "approve email"]):
+        from gurt.db import get_action_proposals
+        proposals = get_action_proposals(event_id)
+        pending = [p for p in proposals if p.get("status") == "pending_approval"]
+        target_p = None
+        m_id = re.search(r'act-[a-f0-9]+', msg_lower)
+        if m_id:
+            target_p = next((p for p in pending if p["id"] == m_id.group(0)), None)
+        if not target_p and pending:
+            target_p = pending[0]
+        if target_p:
+            res = tool_approve_outreach(
+                action_id=target_p["id"],
+                event_id=event_id,
+                actor_id="organizer",
+                dispatch_now=True,
+                force_simulation=True
+            )
+            executed_tools.append({"tool": "approve_outreach", "output": res})
+            return {
+                "text": (
+                    f"✅ **Outreach Approved & Dispatched (Simulated)!**\n\n"
+                    f"- **Action ID:** `{res.get('id')}`\n"
+                    f"- **Title:** {res.get('title')}\n"
+                    f"- **Delivery Status:** `{res.get('delivery_status')}`\n\n"
+                    f"🛡️ **Safety Record:** {res.get('warning', 'SIMULATION MODE: Action approved and dispatched locally. No real external email was delivered.')}"
+                ),
+                "tool_calls": executed_tools,
+                "model_used": "gurt-semantic-engine"
+            }
+        return {
+            "text": "No pending action proposals found to approve for this event. You can ask me to *'Draft an invite to Dr. Alicia Chen'* first!",
+            "tool_calls": [],
+            "model_used": "gurt-semantic-engine"
+        }
+
+    if any(k in msg_lower for k in ["dispatch outreach", "dispatch action", "send approved"]):
+        from gurt.db import get_action_proposals
+        proposals = get_action_proposals(event_id)
+        approved = [p for p in proposals if p.get("status") == "approved"]
+        target_p = None
+        m_id = re.search(r'act-[a-f0-9]+', msg_lower)
+        if m_id:
+            target_p = next((p for p in approved if p["id"] == m_id.group(0)), None)
+        if not target_p and approved:
+            target_p = approved[0]
+        if target_p:
+            res = tool_dispatch_approved_action(
+                action_id=target_p["id"],
+                event_id=event_id,
+                actor_id="organizer",
+                force_simulation=True
+            )
+            executed_tools.append({"tool": "dispatch_approved_action", "output": res})
+            return {
+                "text": (
+                    f"🚀 **Action Dispatched in Simulation Mode!**\n\n"
+                    f"- **Action ID:** `{res.get('action_id')}`\n"
+                    f"- **Delivery Status:** `{res.get('delivery_status')}`\n\n"
+                    f"🛡️ **Safety Notice:** {res.get('warning', 'SIMULATION MODE: Message dispatched locally; no live external email delivered.')}"
+                ),
+                "tool_calls": executed_tools,
+                "model_used": "gurt-semantic-engine"
+            }
+        return {
+            "text": "No approved action proposals found ready for dispatch. Proposals must be explicitly approved first.",
+            "tool_calls": [],
             "model_used": "gurt-semantic-engine"
         }
 

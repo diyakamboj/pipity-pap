@@ -155,6 +155,11 @@
             <span class="nav-icon">🛡️</span>
             <span class="nav-label">Guardrails & Safety</span>
           </button>
+          <button class="nav-item" id="nav-activity" onclick="openSideCanvas('activity', '📡', 'Live Operational Activity')">
+            <span class="nav-icon">📡</span>
+            <span class="nav-label">Live Activity</span>
+            <span class="badge" id="nav-activity-count">0</span>
+          </button>
         </nav>
 
         <!-- Recent Chats -->
@@ -275,18 +280,21 @@
                   <h3>Venue Booking Contract (AcroForm)</h3>
                   <p class="pane-desc">Inspect auto-mapped event facts, identify missing unknowns, and download draft PDFs.</p>
                 </div>
-                <button class="btn-small btn-primary" onclick="triggerFillPdf()">⚡ Fill PDF Draft</button>
+                <div style="display:flex; gap:6px;">
+                  <button class="btn-small" onclick="loadPdfPane()" title="Inspect template fields">🔍 Inspect</button>
+                  <button class="btn-small btn-primary" onclick="triggerFillPdf()">⚡ Fill PDF Draft</button>
+                </div>
               </div>
 
               <div class="pdf-showcase-card" id="pdf-showcase-box" style="margin: 0 16px 14px;">
                 <div class="pdf-showcase-header">
-                  <div class="pdf-title-badge"><span>📑</span><span>UW HUB Facility Agreement Template</span></div>
-                  <span class="badge badge-accent">Interactive AcroForm</span>
+                  <div class="pdf-title-badge"><span>📑</span><span id="pdf-template-title">UW HUB Facility Agreement Template</span></div>
+                  <span class="badge badge-accent" id="pdf-template-badge">Interactive AcroForm</span>
                 </div>
                 <div class="pdf-stats-row" id="pdf-stats-row">
-                  <span class="pdf-stat-chip">16 Fields Total</span>
-                  <span class="pdf-stat-chip" style="color:var(--accent-emerald);">8 Auto-Mapped</span>
-                  <span class="pdf-stat-chip" style="color:var(--accent-amber);">8 Missing/Unresolved</span>
+                  <span class="pdf-stat-chip" id="pdf-total-chip">16 Fields Total</span>
+                  <span class="pdf-stat-chip" id="pdf-mapped-chip" style="color:var(--accent-emerald);">8 Auto-Mapped</span>
+                  <span class="pdf-stat-chip" id="pdf-unresolved-chip" style="color:var(--accent-amber);">8 Missing/Unresolved</span>
                 </div>
                 <div id="pdf-download-area" style="margin-top:10px;"></div>
               </div>
@@ -296,7 +304,7 @@
                   <h4 style="font-size:12px; font-weight:700; color:var(--accent-emerald); display:flex; align-items:center; gap:6px; margin-bottom:8px;">
                     <span>✓</span> <span>Auto-Mapped Fields (From Brief & Records)</span>
                   </h4>
-                  <ul class="pdf-mapped-list">
+                  <ul class="pdf-mapped-list" id="pdf-mapped-list">
                     <li><strong>Event_Name:</strong> DubHacks 2026 Agentic AI Workshop</li>
                     <li><strong>Event_Date:</strong> Nov 15, 2026</li>
                     <li><strong>Estimated_Attendance:</strong> 80</li>
@@ -312,7 +320,7 @@
                   <h4 style="font-size:12px; font-weight:700; color:var(--accent-amber); display:flex; align-items:center; gap:6px; margin-bottom:8px;">
                     <span>⚠️</span> <span>Unresolved Fields (Awaiting Organizer Input)</span>
                   </h4>
-                  <ul class="pdf-unresolved-checklist">
+                  <ul class="pdf-unresolved-checklist" id="pdf-unresolved-checklist">
                     <li><strong>Emergency_Contact_Phone:</strong> Requires on-site organizer mobile number</li>
                     <li><strong>UW_Budget_Index_Code:</strong> Requires registered student organization budget code</li>
                     <li><strong>Certificate_of_Liability_Insurance:</strong> Venue requires policy number filed</li>
@@ -406,10 +414,12 @@
                   <p class="pane-desc">Catering, badges, AV specs — evaluated against $2,500 budget.</p>
                 </div>
                 <div style="display:flex; gap:6px;">
+                  <button class="btn-small" onclick="loadVendorComparison('Catering')" title="Compare quotes against requirements">📊 Compare Catering</button>
                   <button class="btn-small" onclick="openAddReqModal()">+ Need</button>
                   <button class="btn-small btn-primary" onclick="openAddVendorModal()">+ Quote</button>
                 </div>
               </div>
+              <div id="vendor-comparison-box" style="display:none; margin: 0 16px 14px;"></div>
               <h4 class="canvas-subheading">REQUIREMENTS &amp; UNKNOWNS</h4>
               <div class="cards-list" id="requirements-list"><div class="loading-state">Loading requirements...</div></div>
               <h4 class="canvas-subheading" style="margin-top:14px;">SUPPLIER QUOTES</h4>
@@ -507,6 +517,18 @@
                   <span class="guardrail-status-pill enforced">ENFORCED</span>
                 </div>
               </div>
+            </div>
+
+            <!-- PANE: Live Operational Activity -->
+            <div class="canvas-pane" id="pane-activity">
+              <div class="pane-header">
+                <div>
+                  <h3>Live Operational Activity Feed</h3>
+                  <p class="pane-desc">Real-time audit log of agent runs, tool calls, approvals, and conflict resolutions.</p>
+                </div>
+                <button class="btn-small btn-primary" onclick="loadActivityFeed()">↻ Refresh</button>
+              </div>
+              <div class="cards-list" id="activity-list"><div class="loading-state">Loading operational activity...</div></div>
             </div>
           </div>
         </div>

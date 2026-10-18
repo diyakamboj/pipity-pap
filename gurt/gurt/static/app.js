@@ -360,15 +360,16 @@ function openSideCanvas(paneId, icon, title) {
   // Trigger pane data loader
   const loaders = {
     'approvals': loadApprovals,
-    'pdf': () => { loadPdfDocuments(); },
+    'pdf': loadPdfPane,
     'brief': loadBrief,
-    'schedule': loadSchedule,
+    'schedule': () => { loadSchedule(); checkScheduleConflicts(); },
     'briefings': loadBriefings,
     'tasks': loadTasks,
     'speakers': loadSpeakers,
-    'vendors': () => { loadVendors(); loadVendorRequirements(); },
+    'vendors': () => { loadVendors(); loadVendorRequirements(); loadVendorComparison('Catering'); },
     'sponsors': loadSponsors,
     'guardrails': () => {},
+    'activity': loadActivityFeed,
   };
   if (loaders[paneId]) loaders[paneId]();
 }
@@ -656,6 +657,7 @@ async function loadAllRecords() {
   loadVendorRequirements();
   loadSponsors();
   loadPdfDocuments();
+  loadActivityFeed();
 }
 
 async function loadOverview() {
@@ -818,7 +820,43 @@ async function loadApprovals() {
       let payload = {};
       try { payload = JSON.parse(act.payload); } catch(e) {}
       const isPending = act.status === 'pending_approval';
+      const isApproved = act.status === 'approved';
+      const isExecuted = act.status === 'executed';
       const isSlack = act.action_type === 'slack_message';
+
+      let statusBadgeClass = 'badge-pending';
+      if (isApproved) statusBadgeClass = 'badge-in_progress';
+      else if (isExecuted) statusBadgeClass = 'badge-executed';
+
+      let footerHtml = '';
+      if (isPending) {
+        footerHtml = `
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            <button class="btn-approve" onclick="approveAction('${act.id}', true)">Approve & Dispatch</button>
+            <button class="btn-small" style="background:var(--bg-input); border:1px solid var(--border-color); color:var(--text-main);" onclick="approveAction('${act.id}', false)">Approve Only</button>
+            <button class="btn-edit-draft" onclick="openEditDraftModal('${act.id}')">✎ Edit Draft</button>
+            <button class="btn-dismiss" onclick="dismissAction('${act.id}')">Dismiss</button>
+          </div>
+        `;
+      } else if (isApproved) {
+        footerHtml = `
+          <div style="display:flex; justify-content:space-between; align-items:center; width:100%;">
+            <span style="font-size:11.5px; color:#fbbf24; font-weight:600;">✓ Approved by Organizer (Ready to Dispatch)</span>
+            <button class="btn-small btn-primary" onclick="dispatchApprovedAction('${act.id}')">🚀 Dispatch (Simulated)</button>
+          </div>
+        `;
+      } else {
+        const deliv = act.delivery_status || 'executed';
+        let delivTag = `<span style="font-size:11px; color:var(--accent-emerald);">✓ Executed at ${(act.executed_at || '').slice(11, 19)}</span>`;
+        if (deliv === 'simulated delivery') {
+          delivTag = `<span style="font-size:11px; color:var(--accent-emerald); font-weight:600;">[SIMULATION] Delivered locally • No real email inbox contacted</span>`;
+        } else if (deliv === 'real provider accepted') {
+          delivTag = `<span style="font-size:11px; color:var(--accent-emerald); font-weight:600;">✓ Real provider accepted</span>`;
+        } else if (deliv === 'failed') {
+          delivTag = `<span style="font-size:11px; color:var(--accent-rose); font-weight:600;">❌ Delivery failed</span>`;
+        }
+        footerHtml = `<div style="display:flex; flex-direction:column; gap:2px;">${delivTag}<span style="font-size:10px; color:var(--text-muted);">Timestamp: ${(act.executed_at || act.updated_at || '').slice(11, 19)}</span></div>`;
+      }
 
       return `
         <div class="card">
@@ -827,7 +865,7 @@ async function loadApprovals() {
               <span class="card-title">${act.title}</span>
               <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">ID: <code>${act.id}</code></div>
             </div>
-            <span class="card-badge ${isPending ? 'badge-pending' : 'badge-executed'}">${act.status.replace('_', ' ')}</span>
+            <span class="card-badge ${statusBadgeClass}">${act.status.replace('_', ' ')}</span>
           </div>
           <div class="card-body">
             ${isSlack ? `<strong>Target Channel:</strong> <code>${payload.channel || '#event-ops'}</code>` : `<strong>Recipient:</strong> ${payload.recipient_email || 'On file'}`}
@@ -835,15 +873,7 @@ async function loadApprovals() {
           </div>
           <div class="card-preview">${payload.message_body || payload.message || act.payload}</div>
           <div class="card-footer">
-            ${isPending ? `
-              <div style="display:flex; gap:8px;">
-                <button class="btn-approve" onclick="approveAction('${act.id}')">Approve & Send</button>
-                <button class="btn-edit-draft" onclick="openEditDraftModal('${act.id}')">✎ Edit Draft</button>
-                <button class="btn-dismiss" onclick="dismissAction('${act.id}')">Dismiss</button>
-              </div>
-            ` : `
-              <span style="font-size:11px; color:var(--accent-emerald);">✓ Executed at ${(act.executed_at || '').slice(11, 19)}</span>
-            `}
+            ${footerHtml}
           </div>
         </div>
       `;
@@ -853,15 +883,53 @@ async function loadApprovals() {
   }
 }
 
-async function approveAction(actionId) {
+async function approveAction(actionId, dispatchNow = true) {
   try {
-    const res = await fetch(`/api/actions/${actionId}/approve`, { method: 'POST' });
+    const res = await fetch(`/api/actions/${actionId}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        actor_id: 'organizer',
+        event_id: currentEventId,
+        dispatch_now: dispatchNow,
+        force_simulation: true
+      })
+    });
     const data = await res.json();
     if (res.ok) {
-      appendMessage('assistant', `✅ **Action Approved & Dispatched!** "${data.title}" has been executed.`);
-      loadAllRecords();
+      if (dispatchNow) {
+        appendMessage('assistant', `✅ **Action Approved & Dispatched (Simulated)!** "${data.title}" has been dispatched locally in safe simulation mode.`);
+      } else {
+        appendMessage('assistant', `✅ **Action Approved!** "${data.title}" has been recorded as approved. Ready for organizer dispatch.`);
+      }
+      loadApprovals();
+      loadActivityFeed();
     } else {
-      alert(`Approval error: ${data.detail || 'Could not approve action'}`);
+      alert(`Approval error: ${data.detail || data.error || 'Could not approve action'}`);
+    }
+  } catch (err) {
+    alert(`Error: ${err.message}`);
+  }
+}
+
+async function dispatchApprovedAction(actionId) {
+  try {
+    const res = await fetch(`/api/actions/${actionId}/dispatch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        actor_id: 'organizer',
+        event_id: currentEventId,
+        force_simulation: true
+      })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      appendMessage('assistant', `🚀 **Action Dispatched (Simulated)!** "${data.title || actionId}" dispatched in safe simulation mode. Delivery status: \`${data.delivery_status}\`.`);
+      loadApprovals();
+      loadActivityFeed();
+    } else {
+      alert(`Dispatch error: ${data.detail || data.error || 'Could not dispatch action'}`);
     }
   } catch (err) {
     alert(`Error: ${err.message}`);
@@ -870,9 +938,17 @@ async function approveAction(actionId) {
 
 async function dismissAction(actionId) {
   try {
-    const res = await fetch(`/api/actions/${actionId}/dismiss`, { method: 'POST' });
+    const res = await fetch(`/api/actions/${actionId}/dismiss`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        actor_id: 'organizer',
+        event_id: currentEventId
+      })
+    });
     if (res.ok) {
-      loadAllRecords();
+      loadApprovals();
+      loadActivityFeed();
     }
   } catch (err) {
     alert(`Error: ${err.message}`);
@@ -973,6 +1049,20 @@ async function loadPdfDocuments() {
       }
     }
   } catch (e) {}
+}
+
+async function loadPdfPane() {
+  try {
+    const res = await fetch('/api/pdf/inspect');
+    if (res.ok) {
+      const data = await res.json();
+      const titleEl = document.getElementById('pdf-template-title');
+      const totalEl = document.getElementById('pdf-total-chip');
+      if (titleEl) titleEl.textContent = data.template_file || 'UW HUB Facility Agreement Template';
+      if (totalEl) totalEl.textContent = `${data.total_fields || 16} Fields Total`;
+    }
+  } catch (e) {}
+  loadPdfDocuments();
 }
 
 let allTasks = [];
@@ -1198,10 +1288,16 @@ async function loadVendors() {
     const navVendors = document.getElementById('nav-vendors-count');
     if (navVendors) navVendors.textContent = vendors.length;
 
+    if (vendors.length === 0) {
+      container.innerHTML = `<div class="empty-state">No vendor quotes recorded yet for this event.</div>`;
+      return;
+    }
+
     container.innerHTML = vendors.map(v => {
       const perHeadStr = v.price_per_head ? `$${v.price_per_head.toFixed(2)}/head` : '';
+      const isPreferred = (v.status === 'preferred' || v.status === 'selected' || v.is_preferred);
       return `
-        <div class="card">
+        <div class="card" style="${isPreferred ? 'border: 1px solid var(--accent-amber);' : ''}">
           <div class="card-header">
             <div>
               <span class="card-title">${v.company_name}</span>
@@ -1214,12 +1310,129 @@ async function loadVendors() {
               $${v.quote_amount.toFixed(2)} <span style="font-size:11px; color:var(--text-muted); font-weight:normal;">${perHeadStr}</span>
             </div>
             <p style="font-size:12px;">${v.details}</p>
+            ${isPreferred ? `
+              <div style="margin-top:8px; padding:4px 8px; background:rgba(245,158,11,0.15); border:1px solid #f59e0b; border-radius:4px; font-size:11px; color:#fbbf24; font-weight:600;">
+                ⭐ Preferred Vendor (Proposal selected — not booked or paid)
+              </div>
+            ` : ''}
+          </div>
+          <div class="card-footer" style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+            <span style="font-size:11px; color:var(--text-muted);">${v.source || 'Direct Quote'}</span>
+            ${!isPreferred ? `
+              <button class="btn-small" onclick="selectPreferredVendor('${v.id}', '${v.company_name.replace(/'/g, "\\'")}')">⭐ Set as Preferred</button>
+            ` : '<span style="font-size:11px; color:#fbbf24;">Selected (Non-binding)</span>'}
           </div>
         </div>
       `;
     }).join('');
   } catch (err) {
     container.innerHTML = `<div class="empty-state">Failed to load vendors.</div>`;
+  }
+}
+
+async function loadVendorComparison(category = 'Catering') {
+  const box = document.getElementById('vendor-comparison-box');
+  if (!box) return;
+  box.style.display = 'block';
+  box.innerHTML = `<div class="loading-state">Comparing ${category} quotes against requirements...</div>`;
+
+  try {
+    const res = await fetch(`/api/vendors/compare?category=${encodeURIComponent(category)}&event_id=${encodeURIComponent(currentEventId)}`);
+    if (!res.ok) {
+      box.innerHTML = `<div class="empty-state">No vendor comparison available for ${category}.</div>`;
+      return;
+    }
+    const data = await res.json();
+    const matrix = data.comparison_matrix || [];
+    if (matrix.length === 0) {
+      box.innerHTML = `<div class="empty-state">No quotes found to compare for ${category}.</div>`;
+      return;
+    }
+
+    const recVendor = data.recommended_vendor || 'N/A';
+    const recReason = data.recommendation_reason || '';
+
+    box.innerHTML = `
+      <div style="background:var(--bg-card); border:1px solid var(--accent-cyan); border-radius:var(--radius-md); padding:14px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+          <div>
+            <h4 style="font-size:13px; font-weight:700; color:var(--text-main); margin:0;">📊 ${category} Quote Comparison Matrix</h4>
+            <div style="font-size:11px; color:var(--text-muted);">Budget: <strong>$${Number(data.event_budget || 0).toLocaleString()}</strong> • Headcount: <strong>${data.attendee_count || 80}</strong></div>
+          </div>
+          <button class="btn-small" onclick="document.getElementById('vendor-comparison-box').style.display='none'">✕ Close</button>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          ${matrix.map(m => {
+            const isRec = m.company_name === recVendor;
+            const isPreferred = m.status === 'preferred' || m.status === 'selected' || m.is_selected;
+            const subtotalLabel = m.is_incomplete_estimate ? 'Estimated Subtotal' : 'Definite Quote';
+            return `
+              <div style="background:rgba(0,0,0,0.25); border:${isRec ? '1px solid var(--accent-emerald)' : '1px solid var(--border-color)'}; border-radius:var(--radius-sm); padding:10px;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <div>
+                    <span style="font-weight:700; font-size:13px; color:${isRec ? 'var(--accent-emerald)' : 'var(--text-main)'};">${m.company_name}</span>
+                    ${isRec ? '<span class="badge badge-accent" style="margin-left:6px; font-size:10px;">🏆 Recommended</span>' : ''}
+                    ${isPreferred ? '<span class="badge" style="margin-left:6px; font-size:10px; background:rgba(245,158,11,0.2); color:#fbbf24;">⭐ Preferred</span>' : ''}
+                  </div>
+                  <div style="text-align:right;">
+                    <span style="font-weight:700; font-size:13px; color:var(--accent-cyan);">$${Number(m.quote_amount || 0).toFixed(2)}</span>
+                    <div style="font-size:10px; color:var(--text-muted);">$${Number(m.price_per_head || 0).toFixed(2)}/head • ${subtotalLabel}</div>
+                  </div>
+                </div>
+                <div style="font-size:11px; color:var(--text-secondary); margin-top:4px;">
+                  Dietary Coverage: <strong>${m.dietary_coverage || 'Standard'}</strong> • Budget Fit: <strong style="color:${m.is_within_budget ? 'var(--accent-emerald)' : 'var(--accent-rose)'};">${m.is_within_budget ? 'Within Budget' : 'Exceeds Budget'}</strong>
+                </div>
+                ${m.unknown_fees ? `<div style="font-size:10.5px; color:#fbbf24; margin-top:2px;">⚠️ ${m.unknown_fees}</div>` : ''}
+                <div style="margin-top:6px; display:flex; justify-content:space-between; align-items:center;">
+                  <span style="font-size:10.5px; color:var(--text-muted);">${m.trade_offs || ''}</span>
+                  ${!isPreferred ? `<button class="btn-small" onclick="selectPreferredVendor('${m.vendor_id || m.id}', '${m.company_name.replace(/'/g, "\\'")}')">⭐ Select Preferred</button>` : '<span style="font-size:10.5px; color:#fbbf24;">Selected (Non-binding)</span>'}
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+
+        ${recReason ? `
+          <div style="margin-top:10px; padding:8px 10px; background:rgba(16,185,129,0.1); border-left:3px solid var(--accent-emerald); border-radius:4px; font-size:11.5px; color:#a7f3d0;">
+            <strong>Recommendation Note:</strong> ${recReason}
+          </div>
+        ` : ''}
+        <div style="margin-top:8px; font-size:10.5px; color:var(--text-muted); text-align:center;">
+          🛡️ Vendor selection saves preferences without executing external bookings, payments, or contracts.
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    box.innerHTML = `<div class="empty-state">Failed to compare quotes: ${err.message}</div>`;
+  }
+}
+
+async function selectPreferredVendor(vendorId, companyName) {
+  if (!confirm(`Select ${companyName} as the preferred vendor proposal?\n\nNote: This records organizer preference without executing any financial transaction or binding contract.`)) {
+    return;
+  }
+  try {
+    const res = await fetch(`/api/vendors/${vendorId}/select`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event_id: currentEventId,
+        selection_notes: `Selected ${companyName} as preferred proposal.`,
+        actor_id: 'organizer'
+      })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      appendMessage('assistant', `⭐ **Preferred Vendor Selected:** **${companyName}** recorded as preferred proposal. Reminding organizer that bookings and contracts remain decoupled.`);
+      loadVendors();
+      loadVendorComparison('Catering');
+      loadActivityFeed();
+    } else {
+      alert('Error selecting vendor: ' + (data.detail || 'Failed'));
+    }
+  } catch (e) {
+    alert('Error selecting vendor: ' + e.message);
   }
 }
 
@@ -1412,6 +1625,16 @@ async function checkScheduleConflicts() {
       return;
     }
 
+    // Also fetch proposals
+    let proposals = [];
+    try {
+      const propRes = await fetch('/api/logistics/conflicts/proposals?event_id=' + encodeURIComponent(currentEventId));
+      if (propRes.ok) {
+        const propData = await propRes.json();
+        proposals = propData.proposals || [];
+      }
+    } catch (e) {}
+
     banner.style.display = 'block';
     banner.innerHTML = `
       <div class="conflict-banner">
@@ -1423,18 +1646,59 @@ async function checkScheduleConflicts() {
           <span class="briefing-fp-tag" style="background:rgba(244,63,94,0.2); color:#fda4af;">Buffer / Room Collision</span>
         </div>
         <div class="conflict-list">
-          ${conflicts.map(c => `
-            <div class="conflict-item">
-              <div class="conflict-item-title">${(c.type || 'CONFLICT').toUpperCase()}: ${c.description || c.title || ''}</div>
-              <div class="conflict-item-desc">Location: <strong>${c.location || c.room || 'Unassigned'}</strong> • Slot: <strong>${c.time_slot || ''}</strong></div>
-              ${c.suggested_resolution ? `<div class="conflict-resolution-tag">💡 Fix: ${c.suggested_resolution}</div>` : ''}
-            </div>
-          `).join('')}
+          ${conflicts.map((c, idx) => {
+            const prop = proposals[idx] || proposals.find(p => p.conflict_id === c.id || p.session_id === c.session_id);
+            return `
+              <div class="conflict-item">
+                <div class="conflict-item-title">${(c.type || 'CONFLICT').toUpperCase()}: ${c.description || c.title || ''}</div>
+                <div class="conflict-item-desc">Location: <strong>${c.location || c.room || 'Unassigned'}</strong> • Slot: <strong>${c.time_slot || ''}</strong></div>
+                ${c.suggested_resolution ? `
+                  <div style="margin-top:6px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+                    <span class="conflict-resolution-tag">💡 Fix: ${c.suggested_resolution}</span>
+                    ${prop ? `
+                      <button class="btn-small btn-primary" onclick="applyScheduleConflictFix('${prop.session_id}', '${prop.conflict_id || ''}', '${prop.expected_fingerprint}', '${encodeURIComponent(JSON.stringify(prop.proposed_changes))}')">Apply Resolution</button>
+                    ` : ''}
+                  </div>
+                ` : ''}
+              </div>
+            `;
+          }).join('')}
         </div>
       </div>
     `;
   } catch (err) {
     console.error('Error checking schedule conflicts:', err);
+  }
+}
+
+async function applyScheduleConflictFix(sessionId, conflictId, fingerprint, changesStr) {
+  if (!confirm(`Apply schedule resolution to shift session '${sessionId}' to resolve room/buffer conflict?\n\nThis will update the Run-of-Show timeline and record organizer confirmation.`)) {
+    return;
+  }
+  try {
+    const changes = JSON.parse(decodeURIComponent(changesStr));
+    const res = await fetch('/api/logistics/conflicts/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event_id: currentEventId,
+        session_id: sessionId,
+        proposed_changes: changes,
+        expected_fingerprint: fingerprint,
+        conflict_id: conflictId || undefined
+      })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      appendMessage('assistant', `✅ **Conflict Resolution Applied!** Session \`${sessionId}\` shifted to **${data.new_time_slot}** in **${data.new_location}**. Schedule updated with organizer confirmation.`);
+      checkScheduleConflicts();
+      loadSchedule();
+      loadActivityFeed();
+    } else {
+      alert('Error applying resolution: ' + (data.message || data.error || 'Failed to apply resolution'));
+    }
+  } catch (err) {
+    alert('Error applying resolution: ' + err.message);
   }
 }
 
@@ -1626,6 +1890,53 @@ function viewBriefingDetails(briefingId) {
 
   const formatted = JSON.stringify(payload, null, 2);
   appendMessage('assistant', `### 📑 Briefing Packet: ${b.role.toUpperCase()} (\`${b.id}\`)\n\`\`\`json\n${formatted}\n\`\`\``);
+}
+
+async function loadActivityFeed() {
+  const container = document.getElementById('activity-list');
+  if (!container) return;
+  try {
+    const res = await fetch('/api/activity?event_id=' + encodeURIComponent(currentEventId));
+    if (!res.ok) {
+      container.innerHTML = `<div class="empty-state">No activity records found.</div>`;
+      return;
+    }
+    const activities = await res.json();
+    if (!activities || activities.length === 0) {
+      container.innerHTML = `<div class="empty-state">No operational activity recorded yet for this event.</div>`;
+      return;
+    }
+    container.innerHTML = activities.map(act => {
+      const ts = (act.timestamp || '').slice(0, 19).replace('T', ' ');
+      let badgeColor = 'rgba(99,102,241,0.2)';
+      let badgeText = '#a5b4fc';
+      if (act.status === 'success' || act.status === 'executed' || act.status === 'completed') {
+        badgeColor = 'rgba(16,185,129,0.2)'; badgeText = '#6ee7b7';
+      } else if (act.status === 'pending' || act.status === 'pending_approval') {
+        badgeColor = 'rgba(245,158,11,0.2)'; badgeText = '#fcd34d';
+      } else if (act.status === 'failed' || act.status === 'error') {
+        badgeColor = 'rgba(244,63,94,0.2)'; badgeText = '#fda4af';
+      }
+
+      return `
+        <div class="card" style="padding:10px 14px; margin-bottom:8px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+            <div>
+              <span style="font-weight:700; font-size:12.5px; color:var(--text-main);">${act.action || 'Activity'}</span>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">${act.summary || ''}</div>
+            </div>
+            <span style="background:${badgeColor}; color:${badgeText}; padding:2px 8px; border-radius:4px; font-weight:600; text-transform:uppercase; font-size:10px;">${act.status}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px; font-size:10.5px; color:var(--text-muted);">
+            <span>Run: <code>${act.run_id || 'manual'}</code></span>
+            <span>${ts}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state">Error loading activity: ${err.message}</div>`;
+  }
 }
 
 // Initial boot load
