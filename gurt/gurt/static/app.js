@@ -12,6 +12,8 @@ const vendorsCountBadge = document.getElementById('vendors-count');
 const sponsorsCountBadge = document.getElementById('sponsors-count');
 
 let conversationHistory = [];
+let activeEventBrief = {};
+let allActionProposals = [];
 
 // Tab switching
 document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -77,7 +79,6 @@ async function submitMessage() {
       conversationHistory.push({ role: 'assistant', content: data.text });
       if (conversationHistory.length > 8) conversationHistory = conversationHistory.slice(-8);
 
-      // Update model badge if Gemini was used
       if (data.model_used) {
         const badge = document.getElementById('model-badge');
         if (badge) {
@@ -116,6 +117,7 @@ function appendMessage(role, text, toolCalls = [], modelUsed = null) {
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.*?)\*/g, '<em>$1</em>')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:var(--accent-cyan); text-decoration:underline;">$1</a>')
     .replace(/> (.*?)(?:<br>|$)/g, '<blockquote>$1</blockquote>');
 
   msgEl.innerHTML = `
@@ -151,11 +153,15 @@ function removeMessage(id) {
 // Global data refresh
 async function loadAllRecords() {
   loadOverview();
+  loadBrief();
+  loadSchedule();
   loadApprovals();
   loadTasks();
   loadSpeakers();
   loadVendors();
+  loadVendorRequirements();
   loadSponsors();
+  loadPdfDocuments();
 }
 
 async function loadOverview() {
@@ -164,10 +170,17 @@ async function loadOverview() {
     if (!res.ok) return;
     const data = await res.json();
     const ev = data.event || {};
-    
+    activeEventBrief = ev;
+
+    const titleEl = document.getElementById('header-event-title');
+    if (titleEl) titleEl.textContent = ev.title || 'DubHacks 2026 Agentic AI Workshop';
+
+    const metaEl = document.getElementById('header-event-meta');
+    if (metaEl) metaEl.textContent = `${ev.date || 'Nov 15, 2026'} • ${ev.location || 'UW HUB'} • ${ev.attendee_count || 80} Attendees`;
+
     const budgetEl = document.getElementById('stat-budget');
     if (budgetEl) budgetEl.textContent = `$${(ev.budget || 2500).toLocaleString()}`;
-    
+
     const tasksEl = document.getElementById('stat-tasks');
     if (tasksEl) tasksEl.textContent = data.tasks || '0/0';
 
@@ -176,11 +189,119 @@ async function loadOverview() {
   } catch (e) {}
 }
 
+async function loadBrief() {
+  const container = document.getElementById('brief-display-container');
+  try {
+    const res = await fetch('/api/event/brief');
+    const b = await res.json();
+    activeEventBrief = b;
+
+    container.innerHTML = `
+      <div class="brief-container">
+        <div class="brief-hero">
+          <div class="brief-hero-header">
+            <div>
+              <div class="brief-hero-title">${b.title}</div>
+              <div style="font-size:12px; color:var(--text-muted); margin-top:2px;">Status: <strong style="color:var(--accent-cyan); text-transform:uppercase;">${b.status}</strong> • Updated: <strong>${(b.updated_at || '').slice(0, 16).replace('T', ' ')}</strong></div>
+            </div>
+            <button class="btn-small btn-primary" onclick="openEditBriefModal()">✎ Edit Specifications</button>
+          </div>
+          <p style="font-size:13px; line-height:1.5; color:var(--text-secondary); margin-top:10px;">${b.goals || 'No goals specified yet.'}</p>
+        </div>
+
+        <div class="brief-meta-grid">
+          <div class="brief-meta-card">
+            <div class="brief-meta-label">Date & Time</div>
+            <div class="brief-meta-val">${b.date}</div>
+          </div>
+          <div class="brief-meta-card">
+            <div class="brief-meta-label">Location / Venue</div>
+            <div class="brief-meta-val">${b.location}</div>
+          </div>
+          <div class="brief-meta-card">
+            <div class="brief-meta-label">Headcount</div>
+            <div class="brief-meta-val">${b.attendee_count} Attendees</div>
+          </div>
+          <div class="brief-meta-card">
+            <div class="brief-meta-label">Total Budget</div>
+            <div class="brief-meta-val" style="color:var(--accent-emerald);">$${Number(b.budget || 0).toLocaleString()}</div>
+          </div>
+          <div class="brief-meta-card" style="grid-column: 1 / -1;">
+            <div class="brief-meta-label">Dietary Specifications (Catering Bound)</div>
+            <div class="brief-meta-val" style="font-weight:normal; font-size:12.5px;">${b.dietary_specs || 'Nut-free facility required; vegan, halal, and gluten-free meal boxes.'}</div>
+          </div>
+          <div class="brief-meta-card" style="grid-column: 1 / -1;">
+            <div class="brief-meta-label">AV & Technical Requirements</div>
+            <div class="brief-meta-val" style="font-weight:normal; font-size:12.5px;">${b.av_requirements || 'Dual projectors in Room 214, 2 wireless handheld mics, podium lapel mic.'}</div>
+          </div>
+        </div>
+      </div>
+    `;
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state">Failed to load event brief.</div>`;
+  }
+}
+
+async function loadSchedule() {
+  const container = document.getElementById('schedule-list');
+  try {
+    const res = await fetch('/api/schedule');
+    const schedule = await res.json();
+
+    if (!schedule || schedule.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state">
+          No schedule generated yet. Click "Re-synthesize Schedule" to build the run-of-show timeline!
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = schedule.map(s => {
+      let typeColor = 'rgba(99,102,241,0.2)';
+      let textCol = '#a5b4fc';
+      if (s.activity_type === 'keynote') { typeColor = 'rgba(16,185,129,0.2)'; textCol = '#6ee7b7'; }
+      else if (s.activity_type === 'lunch') { typeColor = 'rgba(245,158,11,0.2)'; textCol = '#fcd34d'; }
+      else if (s.activity_type === 'setup' || s.activity_type === 'teardown') { typeColor = 'rgba(244,63,94,0.2)'; textCol = '#fda4af'; }
+
+      return `
+        <div class="timeline-card">
+          <div class="timeline-time-badge">${s.time_slot}</div>
+          <div class="timeline-body">
+            <div class="timeline-title">${s.activity}</div>
+            <div class="timeline-meta">
+              <span>📍 <strong>${s.location}</strong></span>
+              <span>👤 Owner: <strong>${s.owner}</strong></span>
+              <span style="background:${typeColor}; color:${textCol}; padding:2px 8px; border-radius:4px; font-weight:600; text-transform:uppercase; font-size:10px;">${s.activity_type}</span>
+            </div>
+            ${s.notes ? `<div style="font-size:11.5px; color:#94a3b8; margin-top:4px;">${s.notes}</div>` : ''}
+          </div>
+        </div>
+      `;
+    }).join('');
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state">Failed to load schedule.</div>`;
+  }
+}
+
+async function handleGenerateSchedule() {
+  try {
+    const res = await fetch('/api/schedule/generate', { method: 'POST' });
+    if (res.ok) {
+      loadSchedule();
+      appendMessage('assistant', `📅 **Run-of-Show Schedule Synthesized!** Integrated confirmed keynote, hands-on tracks, catered lunch, and teardown.`);
+    }
+  } catch (e) {
+    alert('Error generating schedule: ' + e.message);
+  }
+}
+
 async function loadApprovals() {
   const container = document.getElementById('approvals-list');
   try {
     const res = await fetch('/api/actions');
     const actions = await res.json();
+    allActionProposals = actions;
     const pending = actions.filter(a => a.status === 'pending_approval');
     if (approvalCountBadge) approvalCountBadge.textContent = pending.length;
 
@@ -210,16 +331,18 @@ async function loadApprovals() {
           </div>
           <div class="card-body">
             ${isSlack ? `<strong>Target Channel:</strong> <code>${payload.channel || '#event-ops'}</code>` : `<strong>Recipient:</strong> ${payload.recipient_email || 'On file'}`}
+            ${payload.subject ? `<div style="font-size:12px; margin-top:4px; font-weight:600;">Subject: ${payload.subject}</div>` : ''}
           </div>
           <div class="card-preview">${payload.message_body || payload.message || act.payload}</div>
           <div class="card-footer">
             ${isPending ? `
               <div style="display:flex; gap:8px;">
                 <button class="btn-approve" onclick="approveAction('${act.id}')">Approve & Send</button>
+                <button class="btn-edit-draft" onclick="openEditDraftModal('${act.id}')">✎ Edit Draft</button>
                 <button class="btn-dismiss" onclick="dismissAction('${act.id}')">Dismiss</button>
               </div>
             ` : `
-              <span style="font-size:11px; color:var(--accent-emerald);">✓ Executed</span>
+              <span style="font-size:11px; color:var(--accent-emerald);">✓ Executed at ${(act.executed_at || '').slice(11, 19)}</span>
             `}
           </div>
         </div>
@@ -254,6 +377,102 @@ async function dismissAction(actionId) {
   } catch (err) {
     alert(`Error: ${err.message}`);
   }
+}
+
+function openEditDraftModal(actionId) {
+  const act = allActionProposals.find(a => a.id === actionId);
+  if (!act) return;
+  let payload = {};
+  try { payload = JSON.parse(act.payload); } catch(e) {}
+
+  document.getElementById('modal-draft-id').value = actionId;
+  document.getElementById('modal-draft-subject').value = payload.subject || act.title;
+  document.getElementById('modal-draft-body').value = payload.message_body || payload.message || '';
+  document.getElementById('edit-draft-modal').style.display = 'flex';
+}
+
+async function handleSaveDraftEdit(e) {
+  e.preventDefault();
+  const id = document.getElementById('modal-draft-id').value;
+  const subject = document.getElementById('modal-draft-subject').value.trim();
+  const message_body = document.getElementById('modal-draft-body').value.trim();
+
+  try {
+    const res = await fetch(`/api/actions/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject, message_body })
+    });
+    if (res.ok) {
+      closeModal('edit-draft-modal');
+      loadApprovals();
+      appendMessage('assistant', `✏️ **Draft Updated!** Changes saved to action proposal \`${id}\`. Ready for approval.`);
+    }
+  } catch (err) {
+    alert('Error saving draft: ' + err.message);
+  }
+}
+
+// PDF Form Filling Standout Workflow
+async function triggerFillPdf() {
+  const btn = document.querySelector('.btn-pdf-action');
+  if (btn) btn.disabled = true;
+
+  try {
+    const res = await fetch('/api/pdf/fill', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      displayPdfSuccess(data);
+      appendMessage('assistant', `📄 **Facility Booking Form Filled!** Generated draft PDF: [${data.output_file}](${data.download_url}). 8 facts mapped from brief/catering records; 8 items left unresolved.`);
+    }
+  } catch (err) {
+    alert('PDF form fill error: ' + err.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function displayPdfSuccess(data) {
+  const area = document.getElementById('pdf-download-area');
+  if (!area) return;
+
+  const missingList = data.unresolved_missing_fields.map(m => `<li><strong>${m.field}:</strong> ${m.reason}</li>`).join('');
+
+  area.innerHTML = `
+    <div style="background:var(--bg-card); border:1px solid var(--accent-emerald); border-radius:var(--radius-sm); padding:12px; margin-top:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <span style="font-size:13px; font-weight:700; color:var(--text-main);">Draft PDF Created: <code>${data.output_file}</code></span>
+          <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Mapped ${data.field_counts.mapped} fields • Original template preserved untouched</div>
+        </div>
+        <a href="${data.download_url}" target="_blank" class="btn-pdf-action" style="padding:6px 12px; font-size:12px;">⬇ Download PDF</a>
+      </div>
+      <div class="pdf-unresolved-box">
+        <strong>⚠️ Unresolved Fields Requiring Manual Organizer Review (${data.field_counts.unresolved}):</strong>
+        <ul class="pdf-unresolved-list">${missingList}</ul>
+      </div>
+    </div>
+  `;
+}
+
+async function loadPdfDocuments() {
+  try {
+    const res = await fetch('/api/pdf/documents');
+    const docs = await res.json();
+    if (docs.length > 0) {
+      const latest = docs[0];
+      const filename = latest.file_path.split('\\').pop().split('/').pop();
+      const area = document.getElementById('pdf-download-area');
+      if (area && !area.innerHTML.trim()) {
+        area.innerHTML = `
+          <div style="display:flex; align-items:center; justify-content:space-between; background:var(--bg-card); padding:8px 12px; border-radius:var(--radius-sm); border:1px solid var(--border-color); margin-top:8px;">
+            <span style="font-size:12px;">Existing Draft on File: <code>${filename}</code></span>
+            <a href="/api/pdf/download/${filename}" target="_blank" class="btn-pdf-secondary">Download Latest Draft</a>
+          </div>
+        `;
+      }
+    }
+  } catch (e) {}
 }
 
 async function loadTasks() {
@@ -332,6 +551,38 @@ async function loadSpeakers() {
   }
 }
 
+async function loadVendorRequirements() {
+  const container = document.getElementById('requirements-list');
+  if (!container) return;
+  try {
+    const res = await fetch('/api/vendor-requirements');
+    const reqs = await res.json();
+
+    if (reqs.length === 0) {
+      container.innerHTML = `<div class="empty-state">No vendor requirements logged yet.</div>`;
+      return;
+    }
+
+    container.innerHTML = reqs.map(r => `
+      <div class="card" style="border-left: 3px solid var(--accent-cyan);">
+        <div class="card-header">
+          <div>
+            <span class="card-title">${r.category}</span>
+            <div style="font-size:11px; color:var(--text-muted);">Headcount: <strong>${r.headcount}</strong> • Allocated Budget: <strong>$${Number(r.budget_allocated || 0).toLocaleString()}</strong></div>
+          </div>
+          <span class="card-badge badge-${r.status}">${r.status}</span>
+        </div>
+        <div class="card-body">
+          <p style="font-size:12.5px;">${r.specification}</p>
+          ${r.unknowns ? `<div style="margin-top:6px; font-size:11.5px; color:#fbbf24;">⚠️ <strong>Unknowns to resolve:</strong> ${r.unknowns}</div>` : ''}
+        </div>
+      </div>
+    `).join('');
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state">Failed to load requirements.</div>`;
+  }
+}
+
 async function loadVendors() {
   const container = document.getElementById('vendors-list');
   try {
@@ -394,12 +645,56 @@ async function loadSponsors() {
 }
 
 // Modal handling
+function openEditBriefModal() {
+  const b = activeEventBrief;
+  document.getElementById('modal-brief-title').value = b.title || '';
+  document.getElementById('modal-brief-date').value = b.date || '';
+  document.getElementById('modal-brief-attendees').value = b.attendee_count || 80;
+  document.getElementById('modal-brief-location').value = b.location || '';
+  document.getElementById('modal-brief-budget').value = b.budget || 2500;
+  document.getElementById('modal-brief-goals').value = b.goals || '';
+  document.getElementById('modal-brief-dietary').value = b.dietary_specs || '';
+  document.getElementById('modal-brief-av').value = b.av_requirements || '';
+  document.getElementById('brief-modal').style.display = 'flex';
+}
+
+async function handleSaveBrief(e) {
+  e.preventDefault();
+  const title = document.getElementById('modal-brief-title').value.trim();
+  const date = document.getElementById('modal-brief-date').value.trim();
+  const attendee_count = parseInt(document.getElementById('modal-brief-attendees').value);
+  const location = document.getElementById('modal-brief-location').value.trim();
+  const budget = parseFloat(document.getElementById('modal-brief-budget').value);
+  const goals = document.getElementById('modal-brief-goals').value.trim();
+  const dietary_specs = document.getElementById('modal-brief-dietary').value.trim();
+  const av_requirements = document.getElementById('modal-brief-av').value.trim();
+
+  try {
+    const res = await fetch('/api/event/brief', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, date, attendee_count, location, budget, goals, dietary_specs, av_requirements })
+    });
+    if (res.ok) {
+      closeModal('brief-modal');
+      loadAllRecords();
+      appendMessage('assistant', `📝 **Event Brief Updated!** Title: "${title}", Headcount: ${attendee_count}, Budget: $${budget.toLocaleString()}.`);
+    }
+  } catch (err) {
+    alert('Error saving brief: ' + err.message);
+  }
+}
+
 function openAddTaskModal() {
   document.getElementById('task-modal').style.display = 'flex';
 }
 
 function openAddVendorModal() {
   document.getElementById('vendor-modal').style.display = 'flex';
+}
+
+function openAddReqModal() {
+  document.getElementById('req-modal').style.display = 'flex';
 }
 
 function closeModal(modalId) {
@@ -454,6 +749,30 @@ async function handleCreateVendor(e) {
     }
   } catch (err) {
     alert(`Error saving vendor: ${err.message}`);
+  }
+}
+
+async function handleCreateReq(e) {
+  e.preventDefault();
+  const category = document.getElementById('modal-req-category').value;
+  const headcount = parseInt(document.getElementById('modal-req-headcount').value);
+  const specification = document.getElementById('modal-req-spec').value.trim();
+  const unknowns = document.getElementById('modal-req-unknowns').value.trim();
+
+  try {
+    const res = await fetch('/api/vendor-requirements', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category, headcount, specification, unknowns })
+    });
+    if (res.ok) {
+      closeModal('req-modal');
+      document.getElementById('add-req-form').reset();
+      loadAllRecords();
+      appendMessage('assistant', `🔍 **Vendor Need Logged!** Recorded specification for **${category}** (${headcount} pax).`);
+    }
+  } catch (err) {
+    alert(`Error saving requirement: ${err.message}`);
   }
 }
 

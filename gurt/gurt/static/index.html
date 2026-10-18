@@ -6,7 +6,7 @@
   <title>Gurt — Event Operations Agent</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -25,11 +25,11 @@
           </div>
         </div>
 
-        <div class="event-pill">
+        <div class="event-pill" onclick="openEditBriefModal()" style="cursor:pointer;" title="Click to edit event brief">
           <span class="event-dot"></span>
           <div class="event-details">
-            <span class="event-name">DubHacks 2026 Agentic AI Workshop</span>
-            <span class="event-meta">Nov 15, 2026 • UW HUB Ballroom • 80 Attendees</span>
+            <span class="event-name" id="header-event-title">DubHacks 2026 Agentic AI Workshop</span>
+            <span class="event-meta" id="header-event-meta">Nov 15, 2026 • UW HUB Ballroom • 80 Attendees</span>
           </div>
         </div>
       </div>
@@ -78,11 +78,12 @@
             <div class="msg-avatar">🧃</div>
             <div class="msg-body">
               <p><strong>Yo! I'm Gurt</strong>, your autonomous event operations agent for the <strong>DubHacks 2026 Workshop</strong>.</p>
-              <p>I have live access to our <strong>event database</strong>, real-time <strong>web research (Tavily)</strong>, and our <strong>Human-in-the-Loop Action Center</strong>. I help you across:</p>
+              <p>I have live access to our <strong>event database</strong>, real-time <strong>web research (Tavily)</strong>, <strong>PDF form filling</strong>, and our <strong>Human-in-the-Loop Action Center</strong>. I help you across:</p>
               <ul>
-                <li><strong>Outreach:</strong> Researching speakers & sponsors, drafting invites, and tracking confirmations.</li>
-                <li><strong>Vendors:</strong> Comparing catering quotes ($12–$17/head), badges, and supplier contracts against our $2,500 budget.</li>
-                <li><strong>Logistics:</strong> Managing the run-of-show checklist, task dependencies, and assigning owners.</li>
+                <li><strong>Event Brief & Run-of-Show:</strong> Reviewing goals, constraints, and synthesizing realistic schedules.</li>
+                <li><strong>Outreach:</strong> Researching speakers & sponsors, drafting invites, and preventing duplicate actions.</li>
+                <li><strong>Vendors:</strong> Comparing catering quotes ($13.50/head), badges, and supplier contracts against our $2,500 budget.</li>
+                <li><strong>PDF Contracts:</strong> Inspecting fillable venue booking forms and generating downloadable draft PDFs.</li>
               </ul>
               <p>What should we work on?</p>
             </div>
@@ -91,16 +92,16 @@
 
         <!-- Quick Action Prompt Chips -->
         <div class="prompt-chips">
+          <button class="chip" onclick="sendQuickPrompt('Fill out the UW HUB booking contract PDF with our saved event facts')">📄 Fill contract PDF</button>
+          <button class="chip" onclick="sendQuickPrompt('Synthesize our run-of-show schedule for 80 attendees')">📅 Run-of-show schedule</button>
           <button class="chip" onclick="sendQuickPrompt('Draft an outreach invitation to Dr. Alicia Chen')">✉️ Draft speaker invite</button>
           <button class="chip" onclick="sendQuickPrompt('Compare catering quotes under $15/head')">🥗 Compare catering</button>
-          <button class="chip" onclick="sendQuickPrompt('Add a task: Rent 3 wireless mics from UW AV by Nov 12')">➕ Add AV task</button>
-          <button class="chip" onclick="sendQuickPrompt('Show the run-of-show logistics task list')">📋 Run-of-show tasks</button>
-          <button class="chip" onclick="sendQuickPrompt('Who are our current confirmed sponsors?')">💎 Sponsor pipeline</button>
+          <button class="chip" onclick="sendQuickPrompt('What are our active vendor requirements and missing facts?')">🔍 Vendor requirements</button>
         </div>
 
         <!-- Chat Input Form -->
         <form class="chat-input-bar" id="chat-form">
-          <input type="text" id="user-input" placeholder="Ask Gurt anything (e.g. 'Draft email to Marcus' or 'Add task')..." autocomplete="off">
+          <input type="text" id="user-input" placeholder="Ask Gurt anything (e.g. 'Fill contract PDF', 'Draft invite to Alicia', 'Add task')..." autocomplete="off">
           <button type="submit" id="send-btn" class="send-button">
             <span>Send</span>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
@@ -114,6 +115,12 @@
           <button class="tab-btn active" data-tab="approvals">
             Action Center <span class="badge badge-accent" id="approval-count">0</span>
           </button>
+          <button class="tab-btn" data-tab="brief">
+            Event Brief
+          </button>
+          <button class="tab-btn" data-tab="schedule">
+            Schedule & Run-of-Show
+          </button>
           <button class="tab-btn" data-tab="tasks">
             Logistics Tasks <span class="badge" id="tasks-count">0</span>
           </button>
@@ -121,19 +128,40 @@
             Speakers <span class="badge" id="speakers-count">0</span>
           </button>
           <button class="tab-btn" data-tab="vendors">
-            Vendors <span class="badge" id="vendors-count">0</span>
+            Vendors & Needs <span class="badge" id="vendors-count">0</span>
           </button>
           <button class="tab-btn" data-tab="sponsors">
             Sponsors <span class="badge" id="sponsors-count">0</span>
           </button>
         </nav>
 
-        <!-- Tab 1: Action Center / Approvals -->
+        <!-- Tab 1: Action Center / Approvals & PDF Contracts -->
         <div class="tab-pane active" id="pane-approvals">
+          <!-- Standout Workflow Card: PDF Form Filling -->
+          <div class="pdf-showcase-card" id="pdf-showcase-box">
+            <div class="pdf-showcase-header">
+              <div class="pdf-title-badge">
+                <span>📑</span>
+                <span>Venue Facility Contract Form (AcroForm Fill)</span>
+              </div>
+              <button class="btn-pdf-action" onclick="triggerFillPdf()">⚡ Fill Contract PDF Draft</button>
+            </div>
+            <p style="font-size:12px; color:var(--text-secondary);">
+              Inspects <code>UW_HUB_Event_Facility_Booking_Contract.pdf</code>, maps saved event & catering records to 8 fillable fields, highlights 8 unresolved missing facts, and produces an authentic draft PDF.
+            </p>
+            <div class="pdf-stats-row" id="pdf-stats-row">
+              <span class="pdf-stat-chip">Template: <strong>16 AcroForm Fields</strong></span>
+              <span class="pdf-stat-chip">Auto-Mapped: <strong style="color:var(--accent-emerald);">8 Event Facts</strong></span>
+              <span class="pdf-stat-chip">Unresolved: <strong style="color:var(--accent-amber);">8 Missing Fields</strong></span>
+              <span class="pdf-stat-chip">Signing: <strong style="color:#f87171;">Decoupled (Draft Only)</strong></span>
+            </div>
+            <div id="pdf-download-area" style="margin-top:10px;"></div>
+          </div>
+
           <div class="pane-header">
             <div>
               <h3>Human-in-the-Loop Action Center</h3>
-              <p class="pane-desc">Consequential actions (outreach emails, Slack broadcasts) require organizer approval before dispatch.</p>
+              <p class="pane-desc">Consequential actions (outreach emails, Slack broadcasts) require organizer approval before dispatch. You can edit drafts before approving.</p>
             </div>
             <button class="btn-small" onclick="loadApprovals()">↻ Refresh</button>
           </div>
@@ -142,7 +170,35 @@
           </div>
         </div>
 
-        <!-- Tab 2: Logistics Tasks -->
+        <!-- Tab 2: Event Brief -->
+        <div class="tab-pane" id="pane-brief">
+          <div class="pane-header">
+            <div>
+              <h3>Event Master Brief & Specifications</h3>
+              <p class="pane-desc">Core constraints, goals, dietary specs, and AV technical requirements.</p>
+            </div>
+            <button class="btn-small btn-primary" onclick="openEditBriefModal()">✎ Edit Brief</button>
+          </div>
+          <div id="brief-display-container">
+            <div class="loading-state">Loading event brief...</div>
+          </div>
+        </div>
+
+        <!-- Tab 3: Schedule & Run-of-Show -->
+        <div class="tab-pane" id="pane-schedule">
+          <div class="pane-header">
+            <div>
+              <h3>Run-of-Show Schedule</h3>
+              <p class="pane-desc">Integrated timeline connecting setup, keynote, workshop tracks, lunch, demos, and teardown.</p>
+            </div>
+            <button class="btn-small btn-primary" onclick="handleGenerateSchedule()">↻ Re-synthesize Schedule</button>
+          </div>
+          <div class="timeline-list" id="schedule-list">
+            <div class="loading-state">Loading schedule...</div>
+          </div>
+        </div>
+
+        <!-- Tab 4: Logistics Tasks -->
         <div class="tab-pane" id="pane-tasks">
           <div class="pane-header">
             <div>
@@ -156,7 +212,7 @@
           </div>
         </div>
 
-        <!-- Tab 3: Speakers -->
+        <!-- Tab 5: Speakers -->
         <div class="tab-pane" id="pane-speakers">
           <div class="pane-header">
             <div>
@@ -170,21 +226,33 @@
           </div>
         </div>
 
-        <!-- Tab 4: Vendors -->
+        <!-- Tab 6: Vendors & Requirements -->
         <div class="tab-pane" id="pane-vendors">
           <div class="pane-header">
             <div>
-              <h3>Vendor Quotes & Catering Comparison</h3>
-              <p class="pane-desc">Assessed against the 80-attendee headcount and $2,500 budget.</p>
+              <h3>Vendor Sourcing & Requirements Discovery</h3>
+              <p class="pane-desc">Catering, badges, and AV specs for 80 attendees with missing unknowns flagged.</p>
             </div>
-            <button class="btn-small btn-primary" onclick="openAddVendorModal()">+ Add Quote</button>
+            <div style="display:flex; gap:8px;">
+              <button class="btn-small" onclick="openAddReqModal()">+ Log Need</button>
+              <button class="btn-small btn-primary" onclick="openAddVendorModal()">+ Add Quote</button>
+            </div>
           </div>
+
+          <div style="margin-bottom:16px;">
+            <h4 style="font-size:13px; font-weight:700; color:var(--text-secondary); margin-bottom:8px;">DISCOVERED VENDOR REQUIREMENTS & UNKNOWNS</h4>
+            <div class="cards-list" id="requirements-list">
+              <div class="loading-state">Loading requirements...</div>
+            </div>
+          </div>
+
+          <h4 style="font-size:13px; font-weight:700; color:var(--text-secondary); margin-bottom:8px;">SUPPLIER QUOTES & PRICE PER HEAD</h4>
           <div class="cards-list" id="vendors-list">
             <div class="loading-state">Loading vendors...</div>
           </div>
         </div>
 
-        <!-- Tab 5: Sponsors -->
+        <!-- Tab 7: Sponsors -->
         <div class="tab-pane" id="pane-sponsors">
           <div class="pane-header">
             <div>
@@ -199,6 +267,83 @@
         </div>
       </section>
     </main>
+  </div>
+
+  <!-- Modal: Edit Brief -->
+  <div class="modal-overlay" id="brief-modal" style="display:none;">
+    <div class="modal-card" style="width:580px;">
+      <div class="modal-header">
+        <h3>Edit Event Brief & Constraints</h3>
+        <button class="close-btn" onclick="closeModal('brief-modal')">&times;</button>
+      </div>
+      <form id="edit-brief-form" onsubmit="handleSaveBrief(event)">
+        <div class="form-group">
+          <label>Event Title</label>
+          <input type="text" id="modal-brief-title" required>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Date & Time</label>
+            <input type="text" id="modal-brief-date" required>
+          </div>
+          <div class="form-group">
+            <label>Headcount</label>
+            <input type="number" id="modal-brief-attendees" required>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Location / Venue</label>
+            <input type="text" id="modal-brief-location" required>
+          </div>
+          <div class="form-group">
+            <label>Budget ($)</label>
+            <input type="number" step="50" id="modal-brief-budget" required>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Core Objectives / Goals</label>
+          <textarea id="modal-brief-goals" rows="2"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Dietary Specifications</label>
+          <input type="text" id="modal-brief-dietary">
+        </div>
+        <div class="form-group">
+          <label>AV & Technical Requirements</label>
+          <input type="text" id="modal-brief-av">
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" onclick="closeModal('brief-modal')">Cancel</button>
+          <button type="submit" class="btn-primary">Save Brief</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Edit Action Draft -->
+  <div class="modal-overlay" id="edit-draft-modal" style="display:none;">
+    <div class="modal-card" style="width:540px;">
+      <div class="modal-header">
+        <h3>Edit Action Draft Before Approval</h3>
+        <button class="close-btn" onclick="closeModal('edit-draft-modal')">&times;</button>
+      </div>
+      <form id="edit-draft-form" onsubmit="handleSaveDraftEdit(event)">
+        <input type="hidden" id="modal-draft-id">
+        <div class="form-group">
+          <label>Subject Line</label>
+          <input type="text" id="modal-draft-subject" required>
+        </div>
+        <div class="form-group">
+          <label>Message Body</label>
+          <textarea id="modal-draft-body" rows="8" required></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" onclick="closeModal('edit-draft-modal')">Cancel</button>
+          <button type="submit" class="btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
   </div>
 
   <!-- Modal: Add Task -->
@@ -290,6 +435,45 @@
         <div class="modal-actions">
           <button type="button" class="btn-ghost" onclick="closeModal('vendor-modal')">Cancel</button>
           <button type="submit" class="btn-primary">Save Quote</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Add Vendor Requirement -->
+  <div class="modal-overlay" id="req-modal" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Log Vendor Requirement & Unknowns</h3>
+        <button class="close-btn" onclick="closeModal('req-modal')">&times;</button>
+      </div>
+      <form id="add-req-form" onsubmit="handleCreateReq(event)">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Category</label>
+            <select id="modal-req-category">
+              <option value="Catering">Catering</option>
+              <option value="Badges & Signage">Badges & Signage</option>
+              <option value="AV Equipment">AV Equipment</option>
+              <option value="Venue Facility">Venue Facility</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Headcount</label>
+            <input type="number" id="modal-req-headcount" value="80" required>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Specification & Constraints</label>
+          <textarea id="modal-req-spec" rows="2" required placeholder="e.g. 80 individual boxed meals with vegan & gluten-free labels"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Missing Facts / Unknowns to Resolve</label>
+          <textarea id="modal-req-unknowns" rows="2" placeholder="e.g. Exact count of nut-allergic attendees pending RSVP deadline"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" onclick="closeModal('req-modal')">Cancel</button>
+          <button type="submit" class="btn-primary">Record Need</button>
         </div>
       </form>
     </div>
