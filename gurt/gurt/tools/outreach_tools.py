@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any
 import httpx
 from gurt.config import settings
-from gurt.db import get_connection
+from gurt.db import get_connection, log_audit_event
 
 
 def tool_draft_outreach(
@@ -261,6 +261,18 @@ def execute_approved_action(action_id: str) -> dict[str, Any]:
     action = dict(row)
     if action["status"] != "pending_approval":
         conn.close()
+        log_audit_event(
+            event_id=action.get("event_id", "evt-dubhacks-2026"),
+            actor_id="gurt_agent",
+            action="approved_action_execution",
+            target_type="activity",
+            target_id=action_id,
+            details={
+                "status": "failed",
+                "summary": "Approved action execution was rejected because it was not pending approval.",
+                "affected_record_ids": [action_id]
+            }
+        )
         return {
             "error": f"Action {action_id} is already in state '{action['status']}'. Only pending actions can be approved."
         }
@@ -341,6 +353,29 @@ def execute_approved_action(action_id: str) -> dict[str, Any]:
     )
     conn.commit()
     conn.close()
+
+    provider_status = execution_result.get("status")
+    if provider_status in ("recorded_delivery", "delivered_to_outbox"):
+        activity_status = "simulated"
+        activity_summary = "Approved action was recorded by a simulator; delivery is not verified."
+    elif provider_status == "sent":
+        activity_status = "succeeded"
+        activity_summary = "Approved action was accepted by the configured provider; delivery is not verified."
+    else:
+        activity_status = "unknown"
+        activity_summary = "Approved action execution returned an unverified outcome."
+    log_audit_event(
+        event_id=action.get("event_id", "evt-dubhacks-2026"),
+        actor_id="gurt_agent",
+        action="approved_action_execution",
+        target_type="activity",
+        target_id=action_id,
+        details={
+            "status": activity_status,
+            "summary": activity_summary,
+            "affected_record_ids": [action_id]
+        }
+    )
 
     return {
         "action_id": action_id,

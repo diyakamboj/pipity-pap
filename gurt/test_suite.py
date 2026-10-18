@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 # Ensure execution in workspace virtual environment if available
 venv_python = Path(__file__).resolve().parent.parent / ".venv" / "Scripts" / "python.exe"
@@ -33,11 +35,20 @@ if venv_python.exists() and Path(sys.executable).resolve() != venv_python.resolv
 # Add gurt root to sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Keep all suite writes, including API import-time initialization, out of the user's database.
+_TEST_DB_DIR = tempfile.TemporaryDirectory(prefix="gurt-test-")
+_TEST_OUTPUT_DIR = tempfile.TemporaryDirectory(prefix="gurt-output-test-")
+from gurt.config import settings
+settings.db_path = Path(_TEST_DB_DIR.name) / "gurt_events.db"
+
+from fastapi.testclient import TestClient
+
 from gurt.db import (
     init_db,
     query_records,
     get_event_summary,
     get_event_brief,
+    create_event_brief,
     update_event_brief,
     get_vendor_requirements,
     save_vendor_requirement,
@@ -71,7 +82,159 @@ from gurt.tools.pdf_tools import (
     inspect_template_fields,
     fill_event_pdf_form
 )
+from gurt.tools import pdf_tools
+pdf_tools.OUTPUT_DIR = Path(_TEST_OUTPUT_DIR.name)
+from gurt.api.server import app
+from gurt.db import get_conversation_messages
 from gurt.orchestrator import run_orchestrator
+
+
+def test_provider_status_contract() -> None:
+    """Ensure real provider success is explicit, while fallback is never mislabeled as provider success."""
+    client = TestClient(app)
+
+    original_key = run_orchestrator.__globals__["settings"].gemini_api_key
+    original_model = run_orchestrator.__globals__["settings"].gemini_model
+    run_orchestrator.__globals__["settings"].gemini_api_key = "test-gemini-key"
+    run_orchestrator.__globals__["settings"].gemini_model = "gemini-3.8-flash"
+
+    try:
+        fake_response = type("Response", (), {
+            "status_code": 200,
+            "json": lambda self: {"candidates": [{"content": {"parts": [{"text": "Real Gemini answer."}]}}]}
+        })()
+
+        with patch("gurt.orchestrator.requests.post", return_value=fake_response):
+            res = client.post("/api/chat", json={
+                "message": "Summarize the workshop plan.",
+                "event_id": "evt-provider-status-test",
+                "model": "gemini-3.8-flash"
+            })
+
+        assert res.status_code == 200, res.text
+        data = res.json()
+        assert data["provider_status"] == "provider_success", data
+        assert data["execution_mode"] == "gemini", data
+        assert data["model_used"] == "gemini/gemini-3.8-flash", data
+        assert data["conversation_id"], data
+
+        messages = get_conversation_messages(data["conversation_id"])
+        assert any(m["role"] == "user" and m["content"] == "Summarize the workshop plan." for m in messages), messages
+        assert any(m["role"] == "assistant" and m["content"] == data["text"] for m in messages), messages
+
+        # Simulate a provider failure; fallback from the orchestrator must never be marked as provider success.
+        run_orchestrator.__globals__["settings"].gemini_api_key = "test-gemini-key"
+        with patch("gurt.orchestrator.requests.post", side_effect=RuntimeError("provider down")):
+            res_fail = client.post("/api/chat", json={
+                "message": "Summarize the workshop plan.",
+                "event_id": "evt-provider-status-test",
+                "model": "gemini-3.8-flash"
+            })
+
+        assert res_fail.status_code == 200, res_fail.text
+        fail_data = res_fail.json()
+        assert fail_data["provider_status"] == "provider_failure", fail_data
+        assert fail_data["execution_mode"] == "semantic_fallback", fail_data
+        assert fail_data["provider_status"] != "provider_success", fail_data
+
+        function_call_response = type("Response", (), {
+            "status_code": 200,
+            "json": lambda self: {"candidates": [{"content": {"parts": [
+                {"functionCall": {"name": "get_event_overview", "args": {}}},
+                {"functionCall": {"name": "get_event_brief", "args": {}}}
+            ]}}]}
+        })()
+        function_result_response = type("Response", (), {
+            "status_code": 200,
+            "json": lambda self: {"candidates": [{"content": {"parts": [{"text": "Tool results received."}]}}]}
+        })()
+        with patch("gurt.orchestrator.dispatch_tool", side_effect=[
+            {"status": "unrecognized_tool_status"},
+            {"result": "without an explicit outcome"}
+        ]), patch("gurt.orchestrator.requests.post", side_effect=[function_call_response, function_result_response]):
+            ambiguous = client.post("/api/chat", json={
+                "message": "Summarize the workshop plan.",
+                "event_id": "evt-provider-status-test",
+                "model": "gemini-3.8-flash"
+            })
+        assert ambiguous.status_code == 200, ambiguous.text
+        ambiguous_data = ambiguous.json()
+        assert [call["status"] for call in ambiguous_data["tool_calls"]] == ["unknown", "unknown"], ambiguous_data
+        ambiguous_activity = client.get("/api/activity", params={"event_id": "evt-provider-status-test"}).json()
+        logged_ambiguous = [entry for entry in ambiguous_activity if entry["run_id"] == ambiguous_data["run_id"] and entry["action"] in ("get_event_overview", "get_event_brief")]
+        assert len(logged_ambiguous) == 2 and all(entry["status"] == "unknown" for entry in logged_ambiguous), logged_ambiguous
+
+        action_res = client.post("/api/chat", json={
+            "message": "Draft an outreach email to Dr. Alicia Chen",
+            "event_id": "evt-provider-status-test",
+            "model": "semantic-engine"
+        })
+        assert action_res.status_code == 200, action_res.text
+        action_data = action_res.json()
+        action_call = next(call for call in action_data["tool_calls"] if call["tool"] == "draft_outreach")
+        assert action_call["status"] == "pending_approval", action_call
+        action_rows = query_records("action_proposals", event_id="evt-provider-status-test")
+        assert any(row["id"] == action_call["output"]["action_id"] and row["status"] == "pending_approval" for row in action_rows), action_rows
+    finally:
+        run_orchestrator.__globals__["settings"].gemini_api_key = original_key
+        run_orchestrator.__globals__["settings"].gemini_model = original_model
+
+def test_activity_logging_contract() -> None:
+    """Verify event-scoped operational activity and privacy-safe failure records through the API."""
+    assert Path(settings.db_path).parent.resolve() == Path(_TEST_DB_DIR.name).resolve()
+    client = TestClient(app)
+    failure_client = TestClient(app, raise_server_exceptions=False)
+    event_a = "evt-activity-test-a"
+    event_b = "evt-activity-test-b"
+
+    success = client.post("/api/chat", json={
+        "message": "Draft an outreach email to Dr. Alicia Chen",
+        "event_id": event_a,
+        "model": "semantic-engine"
+    })
+    assert success.status_code == 200, success.text
+    success_data = success.json()
+    run_id = success_data["run_id"]
+
+    activities_a = client.get("/api/activity", params={"event_id": event_a}).json()
+    run_entries = [entry for entry in activities_a if entry["run_id"] == run_id and entry["action"] == "agent_run"]
+    assert {entry["status"] for entry in run_entries} == {"starting", "succeeded"}, run_entries
+    pending_entry = next(entry for entry in activities_a if entry["action"] == "draft_outreach")
+    assert pending_entry["status"] == "pending_approval", pending_entry
+    assert "awaiting approval" in pending_entry["summary"].lower(), pending_entry
+
+    action_call = next(call for call in success_data["tool_calls"] if call["tool"] == "draft_outreach")
+    with patch("gurt.tools.outreach_tools.settings.resend_api_key", "re_dummy-test"):
+        approval = client.post(f"/api/actions/{action_call['output']['action_id']}/approve")
+    assert approval.status_code == 200, approval.text
+    activities_a = client.get("/api/activity", params={"event_id": event_a}).json()
+    simulated_entry = next(entry for entry in activities_a if entry["action"] == "approved_action_execution")
+    assert simulated_entry["status"] == "simulated", simulated_entry
+    assert "delivery is not verified" in simulated_entry["summary"].lower(), simulated_entry
+
+    secret_text = "Bearer test-secret PRIVATE PROMPT contents"
+    with patch("gurt.api.server.run_orchestrator", side_effect=RuntimeError(secret_text)):
+        failed = failure_client.post("/api/chat", json={
+            "message": "This request will fail safely.",
+            "event_id": event_a,
+            "model": "semantic-engine"
+        })
+    assert failed.status_code == 500, failed.text
+    activities_a = client.get("/api/activity", params={"event_id": event_a}).json()
+    failed_entry = next(entry for entry in activities_a if entry["run_id"] and entry["status"] == "failed")
+    assert failed_entry["summary"] == "Agent run failed; error details were omitted.", failed_entry
+    assert secret_text not in str(activities_a), activities_a
+
+    other = client.post("/api/chat", json={
+        "message": "What do you mean?",
+        "event_id": event_b,
+        "model": "semantic-engine"
+    })
+    assert other.status_code == 200, other.text
+    activities_b = client.get("/api/activity", params={"event_id": event_b}).json()
+    assert activities_b and all(entry["event_id"] == event_b for entry in activities_b), activities_b
+    assert all(entry["event_id"] == event_a for entry in activities_a), activities_a
+    assert not {entry["run_id"] for entry in activities_a}.intersection({entry["run_id"] for entry in activities_b}), (activities_a, activities_b)
 
 
 def run_tests():
@@ -82,6 +245,24 @@ def run_tests():
     # 1. Event Brief: Initialize, Edit, and Reload
     print("\n[1/10] Verifying Event Brief Creation, Edit, and Reload...")
     init_db()
+    if get_event_brief("evt-dubhacks-2026").get("id") != "evt-dubhacks-2026":
+        create_event_brief({
+            "id": "evt-dubhacks-2026",
+            "title": "DubHacks 2026 Agentic AI Workshop",
+            "date": "2026-11-15 09:00",
+            "location": "UW HUB Ballroom & Room 214",
+            "attendee_count": 80,
+            "budget": 2500.0
+        })
+        tool_add_vendor_quote(
+            company_name="Ballard Bites & Bowls",
+            category="Catering",
+            quote_amount=1080.0,
+            price_per_head=13.5,
+            event_id="evt-dubhacks-2026"
+        )
+    test_provider_status_contract()
+    test_activity_logging_contract()
     brief = tool_get_event_brief("evt-dubhacks-2026")
     assert brief["attendee_count"] == 80, f"Expected 80 attendees, got {brief.get('attendee_count')}"
     print(f" -> Loaded Event: '{brief['title']}' ({brief['attendee_count']} attendees, Budget: ${brief['budget']})")
@@ -99,7 +280,8 @@ def run_tests():
 
     # 2. Speaker & Sponsor Research & Candidate Saving
     print("\n[2/10] Verifying Speaker & Sponsor Research and Evidence Saving...")
-    res_speaker = tool_web_research("Dr. Alicia Chen keynote speaker multi-agent systems")
+    with patch("gurt.tools.research_tool.settings.tavily_api_key", ""):
+        res_speaker = tool_web_research("Dr. Alicia Chen keynote speaker multi-agent systems")
     assert len(res_speaker["results"]) > 0, "Speaker research returned no results"
     is_synth_spk = res_speaker.get("is_synthetic", False)
     print(f" -> Speaker research executed (is_synthetic: {is_synth_spk})")
@@ -211,7 +393,8 @@ def run_tests():
 
     # 8. Approval Controls & Consequential Execution
     print("\n[8/10] Verifying Approval Execution & Double-Execution Guard...")
-    exec_res = execute_approved_action(act_id_1)
+    with patch("gurt.tools.outreach_tools.settings.resend_api_key", "re_dummy-test"):
+        exec_res = execute_approved_action(act_id_1)
     assert exec_res["status"] == "executed", "Action execution failed"
     assert "executed_at" in exec_res, "Execution timestamp missing"
     print(f" -> Action {act_id_1} executed: Provider Result -> {exec_res['result'].get('status')}")
@@ -243,7 +426,8 @@ def run_tests():
     assert fresh_summary["schedule_items"] >= 6, "Schedule did not survive reload"
     print(f" -> Persistence verified: {fresh_summary['speakers']}, {fresh_summary['vendors']}, {fresh_summary['tasks']}, {fresh_summary['schedule_items']} schedule slots.")
 
-    orch_res = run_orchestrator("Fill out the facility contract PDF form and summarize our run of show schedule.")
+    with patch("gurt.orchestrator.settings.gemini_api_key", "AQ.dummy-test"):
+        orch_res = run_orchestrator("Fill out the facility contract PDF form and summarize our run of show schedule.")
     assert "text" in orch_res and len(orch_res["text"]) > 20, "Orchestrator failed to respond"
     print(f" -> Model used: {orch_res['model_used']}")
     safe_snippet = orch_res['text'][:240].encode('ascii', errors='replace').decode('ascii')
