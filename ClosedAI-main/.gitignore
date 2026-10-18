@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+event_data.json
+.event_store_tmp_*
+*.tmp
+*.corrupted*
+*.corrupt*

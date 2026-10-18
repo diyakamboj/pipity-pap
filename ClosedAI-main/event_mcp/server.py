@@ -28,7 +28,17 @@ from fastmcp import FastMCP
 # so make the sibling module importable regardless of the working directory.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from seed_data import EVENT, SPEAKERS, VENDORS, SPONSORS, TASKS  # noqa: E402
+from event_store import EventStore, get_event_store  # noqa: E402
+from seed_data import (  # noqa: E402
+    BRIEFINGS,
+    EVENT,
+    SCHEDULE_ITEMS,
+    SPEAKERS,
+    SPONSORS,
+    TASKS,
+    VENDORS,
+    VENUE_CONSTRAINTS,
+)
 
 
 mcp = FastMCP(name="event-mcp")
@@ -38,62 +48,34 @@ mcp = FastMCP(name="event-mcp")
 # Data backends
 # ---------------------------------------------------------------------------
 class MockBackend:
-    """Seed-data backend. Deterministic, offline, safe for demos/tests."""
+    """Seed-data / JSON-backed event store backend. Deterministic, offline, safe for demos/tests."""
+
+    def __init__(self, store: EventStore | None = None) -> None:
+        self.store = store or get_event_store()
 
     def get_event(self) -> dict[str, Any]:
-        return EVENT
+        return self.store.get_event()
 
     def find_speaker(self, query: str) -> dict[str, Any] | None:
-        q = (query or "").strip().lower()
-        if not q:
-            return None
-        for spk in SPEAKERS:
-            if q == spk["id"].lower() or q == spk["name"].lower():
-                return spk
-        for spk in SPEAKERS:
-            if (
-                q in spk["name"].lower()
-                or q in spk["org"].lower()
-                or q in spk["topic"].lower()
-            ):
-                return spk
-        return None
+        return self.store.find_speaker(query)
 
     def all_speakers(self) -> list[dict[str, Any]]:
-        return SPEAKERS
+        return self.store.all_speakers()
 
     def find_vendor(self, query: str) -> dict[str, Any] | None:
-        q = (query or "").strip().lower()
-        if not q:
-            return None
-        for v in VENDORS:
-            if q == v["id"].lower() or q == v["name"].lower():
-                return v
-        for v in VENDORS:
-            if q in v["name"].lower() or q in v["category"].lower():
-                return v
-        return None
+        return self.store.find_vendor(query)
 
     def all_vendors(self) -> list[dict[str, Any]]:
-        return VENDORS
+        return self.store.all_vendors()
 
     def find_sponsor(self, query: str) -> dict[str, Any] | None:
-        q = (query or "").strip().lower()
-        if not q:
-            return None
-        for s in SPONSORS:
-            if q == s["id"].lower() or q == s["name"].lower():
-                return s
-        for s in SPONSORS:
-            if q in s["name"].lower() or q in s["tier"].lower():
-                return s
-        return None
+        return self.store.find_sponsor(query)
 
     def all_sponsors(self) -> list[dict[str, Any]]:
-        return SPONSORS
+        return self.store.all_sponsors()
 
     def all_tasks(self) -> list[dict[str, Any]]:
-        return TASKS
+        return self.store.all_tasks()
 
 
 class CosmosBackend(MockBackend):
