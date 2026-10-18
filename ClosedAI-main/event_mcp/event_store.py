@@ -12,6 +12,7 @@ from contextlib import contextmanager
 import copy
 from dataclasses import asdict, dataclass, field
 from enum import Enum
+import fcntl
 import json
 import os
 import shutil
@@ -20,6 +21,12 @@ import tempfile
 import threading
 import time
 from typing import Any, Optional
+
+
+class CorruptedStoreError(ValueError):
+    """Raised when persistent store data on disk is corrupted or cannot be safely loaded."""
+    pass
+
 
 # Ensure sibling import works when loaded in isolation
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -251,11 +258,22 @@ class AuditEvent:
 # Persistent Event Store Implementation
 # ---------------------------------------------------------------------------
 class EventStore:
-    """Thread-safe, JSON-backed event store with atomic persistence.
+    """Thread-safe, multi-process safe, JSON-backed event store with atomic persistence.
 
-    - Initializes from seed data without modifying existing IDs or schemas.
-    - Persists updates atomically via temp file + fsync + atomic rename.
-    - Preserves data across MCP subprocess restarts.
+    Cross-process concurrency & consistency guarantees (Phase 5B.1):
+    - Multi-process transaction synchronization via POSIX fcntl.flock on an adjacent
+      stable lock file (<storage_path>.lock). Never locks the JSON inode which is replaced.
+    - Deterministic lock order: in-process threading.RLock acquired FIRST, adjacent
+      _file_lock acquired SECOND to prevent deadlocks.
+    - Cross-process freshness: all public read methods detect external updates via
+      file stat signatures (st_dev, st_ino, st_mtime_ns, st_size) and version counter,
+      reloading latest state immediately while never reloading during an active transaction.
+    - Strict lost-update prevention: all mutation helpers acquire exclusive file locks
+      and reload fresh disk state before modifying and persisting.
+    - Corruption protection: runtime corrupted JSON preserves a timestamped forensic backup
+      and raises CorruptedStoreError rather than silently destroying user data with a seed reset.
+    - Atomic rollback: failed transactions leave persistent data unchanged with no audit
+      record consumed.
     """
 
     def __init__(self, storage_path: str | None = None) -> None:
@@ -266,32 +284,138 @@ class EventStore:
                 os.path.dirname(os.path.abspath(__file__)), "event_data.json"
             )
         self.storage_path = os.path.abspath(storage_path)
+        self.lock_path = f"{self.storage_path}.lock"
         self._lock = threading.RLock()
+        self._file_lock_depth: int = 0
+        self._file_lock_fd: int | None = None
         self._in_transaction: bool = False
+        self._cached_stat: tuple[int, int, int, int] | None = None
+        self._cached_version: int = 0
         self._data: dict[str, Any] = {}
-        self.load()
-
+        self.load(initial=True)
 
     # -----------------------------------------------------------------------
-    # Persistence & Synchronization
+    # Cross-Process Locking & Synchronization
     # -----------------------------------------------------------------------
-    def load(self) -> None:
+    @contextmanager
+    def _file_lock(self, exclusive: bool = True):
+        """Cross-process file lock context manager using POSIX fcntl.flock on an adjacent lockfile.
+
+        Acquisition order invariant:
+            self._lock (threading.RLock) MUST be acquired prior to invoking _file_lock.
+            This serializes threads in the current process before contending for or reusing
+            the process-level file descriptor lock.
+        """
+        lock_dir = os.path.dirname(self.lock_path)
+        if lock_dir:
+            os.makedirs(lock_dir, exist_ok=True)
+
+        if self._file_lock_depth > 0:
+            self._file_lock_depth += 1
+            try:
+                yield
+            finally:
+                self._file_lock_depth -= 1
+            return
+
+        fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o666)
+        op = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        try:
+            fcntl.flock(fd, op)
+            self._file_lock_fd = fd
+            self._file_lock_depth = 1
+            try:
+                yield
+            finally:
+                self._file_lock_depth = 0
+                self._file_lock_fd = None
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+        finally:
+            os.close(fd)
+
+    def _ensure_fresh(self, force: bool = False) -> None:
+        """Check if file on disk has changed and reload if so.
+
+        Requirements:
+        - Detect atomic file replacement (st_ino change).
+        - Do not rely exclusively on mtime > previous_mtime.
+        - Do not reload in the middle of an active transaction (unless force=True).
+        - Do not silently reset corrupted data on runtime reload.
+        """
+        if getattr(self, "_in_transaction", False) and not force:
+            return
+
+        storage = getattr(self, "storage_path", None)
+        if not storage or storage == "/dev/null" or not os.path.exists(storage):
+            return
+
+        try:
+            st = os.stat(storage)
+            current_sig = (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+        except OSError:
+            return
+
+        if not force and getattr(self, "_cached_stat", None) == current_sig:
+            return
+
+        self._reload_from_disk(current_sig)
+
+    def _reload_from_disk(self, current_sig: tuple[int, int, int, int] | None = None) -> None:
+        """Read and parse the JSON file from disk into self._data.
+
+        On corruption, preserves the corrupted file to a backup and raises CorruptedStoreError.
+        """
+        storage = getattr(self, "storage_path", None)
+        if not storage or storage == "/dev/null" or not os.path.exists(storage):
+            return
+
+        try:
+            with open(storage, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if not isinstance(raw, dict):
+                raise ValueError("Event store file must contain a JSON object")
+            self._data = self._ensure_schema(raw)
+            if current_sig is None:
+                st = os.stat(storage)
+                current_sig = (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+            self._cached_stat = current_sig
+            self._cached_version = int(self._data.get("version", 1))
+        except (json.JSONDecodeError, ValueError, OSError) as e:
+            backup_path = self._preserve_corrupted_file()
+            raise CorruptedStoreError(
+                f"Failed to read or parse event store from '{storage}': {e}. "
+                f"Corrupted file backed up to '{backup_path}'."
+            ) from e
+
+    def load(self, initial: bool = False) -> None:
         """Load data from JSON file or initialize with seed data if file doesn't exist."""
         with self._lock:
-            if not os.path.exists(self.storage_path):
-                self.reset_to_seed()
-                return
+            with self._file_lock(exclusive=False):
+                if not os.path.exists(self.storage_path):
+                    self.reset_to_seed()
+                    return
 
-            try:
-                with open(self.storage_path, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-                if not isinstance(raw, dict):
-                    raise ValueError("Event store file must contain a JSON object")
-                self._data = self._ensure_schema(raw)
-            except (json.JSONDecodeError, ValueError, OSError):
-                # Preserve the corrupted file for investigation rather than silently destroying it
-                self._preserve_corrupted_file()
-                self.reset_to_seed()
+                try:
+                    with open(self.storage_path, "r", encoding="utf-8") as f:
+                        raw = json.load(f)
+                    if not isinstance(raw, dict):
+                        raise ValueError("Event store file must contain a JSON object")
+                    self._data = self._ensure_schema(raw)
+                    st = os.stat(self.storage_path)
+                    self._cached_stat = (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+                    self._cached_version = int(self._data.get("version", 1))
+                except (json.JSONDecodeError, ValueError, OSError) as e:
+                    backup = self._preserve_corrupted_file()
+                    if initial:
+                        # Initial startup recovery for backward compatibility with mock/test crash recovery
+                        self.reset_to_seed()
+                    else:
+                        raise CorruptedStoreError(
+                            f"Corrupted event store at '{self.storage_path}': {e}. Preserved at '{backup}'."
+                        ) from e
 
     def _preserve_corrupted_file(self) -> str | None:
         """Preserve a corrupted store file to a timestamped backup before recovery."""
@@ -319,6 +443,32 @@ class EventStore:
             )
             return None
 
+    def _save_under_lock(self) -> None:
+        """Atomically persist self._data to disk while holding file and thread locks."""
+        dir_name = os.path.dirname(self.storage_path)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
+
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=dir_name, prefix=".event_store_tmp_", suffix=".json"
+        )
+        try:
+            with open(tmp_fd, "w", encoding="utf-8") as f:
+                json.dump(self._data, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.storage_path)
+            st = os.stat(self.storage_path)
+            self._cached_stat = (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+            self._cached_version = int(self._data.get("version", 1))
+        except Exception:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            raise
+
     def save(self) -> None:
         """Atomically persist store data to disk."""
         with self._lock:
@@ -327,43 +477,26 @@ class EventStore:
                     "Premature save called while an atomic transaction is active. "
                     "Transactions must commit via transaction context manager only."
                 )
-            dir_name = os.path.dirname(self.storage_path)
-            if dir_name:
-                os.makedirs(dir_name, exist_ok=True)
-
-            tmp_fd, tmp_path = tempfile.mkstemp(
-                dir=dir_name, prefix=".event_store_tmp_", suffix=".json"
-            )
-            try:
-                with open(tmp_fd, "w", encoding="utf-8") as f:
-                    json.dump(self._data, f, indent=2, ensure_ascii=False)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_path, self.storage_path)
-            except Exception:
-                if os.path.exists(tmp_path):
-                    try:
-                        os.remove(tmp_path)
-                    except OSError:
-                        pass
-                raise
+            with self._file_lock(exclusive=True):
+                self._save_under_lock()
 
     def reset_to_seed(self) -> None:
         """Reset the store contents strictly to seed data and persist."""
         with self._lock:
-            self._data = {
-                "version": 1,
-                "event": copy.deepcopy(EVENT),
-                "venue_constraints": copy.deepcopy(VENUE_CONSTRAINTS),
-                "speakers": copy.deepcopy(SPEAKERS),
-                "vendors": copy.deepcopy(VENDORS),
-                "sponsors": copy.deepcopy(SPONSORS),
-                "tasks": copy.deepcopy(TASKS),
-                "schedule": copy.deepcopy(SCHEDULE_ITEMS),
-                "briefings": copy.deepcopy(BRIEFINGS),
-                "audit_trail": [],
-            }
-            self.save()
+            with self._file_lock(exclusive=True):
+                self._data = {
+                    "version": 1,
+                    "event": copy.deepcopy(EVENT),
+                    "venue_constraints": copy.deepcopy(VENUE_CONSTRAINTS),
+                    "speakers": copy.deepcopy(SPEAKERS),
+                    "vendors": copy.deepcopy(VENDORS),
+                    "sponsors": copy.deepcopy(SPONSORS),
+                    "tasks": copy.deepcopy(TASKS),
+                    "schedule": copy.deepcopy(SCHEDULE_ITEMS),
+                    "briefings": copy.deepcopy(BRIEFINGS),
+                    "audit_trail": [],
+                }
+                self._save_under_lock()
 
     def _ensure_schema(self, raw: dict[str, Any]) -> dict[str, Any]:
         """Ensure all required collections exist, backfilling from seed if missing."""
@@ -387,20 +520,15 @@ class EventStore:
 
     @contextmanager
     def transaction(self):
-        """Context manager for atomic multi-entity mutations.
+        """Context manager for atomic multi-entity mutations with cross-process locking.
 
-        Single-process concurrency:
-            Synchronized by self._lock (threading.RLock). All in-memory reads and
-            writes within the transaction block are thread-safe.
+        Locking Order:
+            1. In-process threading.RLock (self._lock)
+            2. Cross-process POSIX fcntl.flock exclusive on self.lock_path
 
-        Multi-process concurrency limitation:
-            Atomic filesystem write via temp file + os.fsync + os.replace guarantees
-            that on POSIX systems the JSON file on disk is never corrupted or left in
-            a partial state. However, if multiple independent OS processes run against
-            the same storage path concurrently without inter-process file locks (e.g. fcntl.flock)
-            or an external database, concurrent read-modify-write cycles can overwrite each other.
-            For production multi-worker environments, use an ACID database backend (Cosmos DB,
-            PostgreSQL) with row/document locking.
+        Cross-Process Freshness:
+            Reloads the latest persisted state from disk AFTER acquiring the exclusive file lock
+            and BEFORE yielding to the caller for validation and staged mutation.
 
         Atomicity & Rollback:
             Modifications made to the yielded `staged` dictionary are only committed
@@ -411,48 +539,61 @@ class EventStore:
         with self._lock:
             if self._in_transaction:
                 raise RuntimeError("Nested transactions are not supported.")
-            snapshot = copy.deepcopy(self._data)
-            staged = copy.deepcopy(self._data)
-            self._in_transaction = True
-            try:
-                yield staged
-                self._data = staged
-                self._in_transaction = False
-                self.save()
-            except Exception:
-                self._data = snapshot
-                self._in_transaction = False
-                raise
-
+            with self._file_lock(exclusive=True):
+                # Reload latest persisted state AFTER acquiring exclusive lock
+                self._ensure_fresh(force=True)
+                snapshot = copy.deepcopy(self._data)
+                staged = copy.deepcopy(self._data)
+                self._in_transaction = True
+                try:
+                    yield staged
+                    staged = self._ensure_schema(staged)
+                    staged["version"] = int(staged.get("version", 0)) + 1
+                    self._data = staged
+                    self._in_transaction = False
+                    self.save()
+                except Exception:
+                    self._data = snapshot
+                    self._in_transaction = False
+                    raise
 
     # -----------------------------------------------------------------------
     # Event Profile & Venue Constraints
     # -----------------------------------------------------------------------
     def get_event(self) -> dict[str, Any]:
         with self._lock:
+            self._ensure_fresh()
             return copy.deepcopy(self._data["event"])
 
     def update_event(self, updates: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
-            self._data["event"].update(updates)
-            self.save()
-            return copy.deepcopy(self._data["event"])
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                self._data["event"].update(updates)
+                self._data["version"] = int(self._data.get("version", 0)) + 1
+                self._save_under_lock()
+                return copy.deepcopy(self._data["event"])
 
     def get_venue_constraints(self) -> dict[str, Any]:
         with self._lock:
+            self._ensure_fresh()
             return copy.deepcopy(self._data["venue_constraints"])
 
     def update_venue_constraints(self, updates: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
-            self._data["venue_constraints"].update(updates)
-            self.save()
-            return copy.deepcopy(self._data["venue_constraints"])
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                self._data["venue_constraints"].update(updates)
+                self._data["version"] = int(self._data.get("version", 0)) + 1
+                self._save_under_lock()
+                return copy.deepcopy(self._data["venue_constraints"])
 
     # -----------------------------------------------------------------------
     # Speakers
     # -----------------------------------------------------------------------
     def all_speakers(self) -> list[dict[str, Any]]:
         with self._lock:
+            self._ensure_fresh()
             return copy.deepcopy(self._data["speakers"])
 
     def find_speaker(self, query: str) -> dict[str, Any] | None:
@@ -460,6 +601,7 @@ class EventStore:
         if not q:
             return None
         with self._lock:
+            self._ensure_fresh()
             speakers = self._data["speakers"]
             for spk in speakers:
                 if q == spk["id"].lower() or q == spk["name"].lower():
@@ -475,11 +617,14 @@ class EventStore:
 
     def update_speaker(self, speaker_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
         with self._lock:
-            for spk in self._data["speakers"]:
-                if spk["id"] == speaker_id:
-                    spk.update(updates)
-                    self.save()
-                    return copy.deepcopy(spk)
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                for spk in self._data["speakers"]:
+                    if spk["id"] == speaker_id:
+                        spk.update(updates)
+                        self._data["version"] = int(self._data.get("version", 0)) + 1
+                        self._save_under_lock()
+                        return copy.deepcopy(spk)
         return None
 
     # -----------------------------------------------------------------------
@@ -487,6 +632,7 @@ class EventStore:
     # -----------------------------------------------------------------------
     def all_vendors(self) -> list[dict[str, Any]]:
         with self._lock:
+            self._ensure_fresh()
             return copy.deepcopy(self._data["vendors"])
 
     def find_vendor(self, query: str) -> dict[str, Any] | None:
@@ -494,6 +640,7 @@ class EventStore:
         if not q:
             return None
         with self._lock:
+            self._ensure_fresh()
             vendors = self._data["vendors"]
             for v in vendors:
                 if q == v["id"].lower() or q == v["name"].lower():
@@ -505,11 +652,14 @@ class EventStore:
 
     def update_vendor(self, vendor_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
         with self._lock:
-            for v in self._data["vendors"]:
-                if v["id"] == vendor_id:
-                    v.update(updates)
-                    self.save()
-                    return copy.deepcopy(v)
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                for v in self._data["vendors"]:
+                    if v["id"] == vendor_id:
+                        v.update(updates)
+                        self._data["version"] = int(self._data.get("version", 0)) + 1
+                        self._save_under_lock()
+                        return copy.deepcopy(v)
         return None
 
     # -----------------------------------------------------------------------
@@ -517,6 +667,7 @@ class EventStore:
     # -----------------------------------------------------------------------
     def all_sponsors(self) -> list[dict[str, Any]]:
         with self._lock:
+            self._ensure_fresh()
             return copy.deepcopy(self._data["sponsors"])
 
     def find_sponsor(self, query: str) -> dict[str, Any] | None:
@@ -524,6 +675,7 @@ class EventStore:
         if not q:
             return None
         with self._lock:
+            self._ensure_fresh()
             sponsors = self._data["sponsors"]
             for s in sponsors:
                 if q == s["id"].lower() or q == s["name"].lower():
@@ -535,11 +687,14 @@ class EventStore:
 
     def update_sponsor(self, sponsor_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
         with self._lock:
-            for s in self._data["sponsors"]:
-                if s["id"] == sponsor_id:
-                    s.update(updates)
-                    self.save()
-                    return copy.deepcopy(s)
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                for s in self._data["sponsors"]:
+                    if s["id"] == sponsor_id:
+                        s.update(updates)
+                        self._data["version"] = int(self._data.get("version", 0)) + 1
+                        self._save_under_lock()
+                        return copy.deepcopy(s)
         return None
 
     # -----------------------------------------------------------------------
@@ -547,10 +702,12 @@ class EventStore:
     # -----------------------------------------------------------------------
     def all_tasks(self) -> list[dict[str, Any]]:
         with self._lock:
+            self._ensure_fresh()
             return copy.deepcopy(self._data["tasks"])
 
     def find_task(self, task_id: str) -> dict[str, Any] | None:
         with self._lock:
+            self._ensure_fresh()
             for t in self._data["tasks"]:
                 if t["id"] == task_id:
                     return copy.deepcopy(t)
@@ -559,55 +716,64 @@ class EventStore:
     def add_task(self, task: dict[str, Any] | OperationalTask) -> dict[str, Any]:
         task_dict = task.to_dict() if isinstance(task, OperationalTask) else copy.deepcopy(task)
         with self._lock:
-            # Prevent duplicate IDs
-            for existing in self._data["tasks"]:
-                if existing["id"] == task_dict["id"]:
-                    raise ValueError(f"Task with id '{task_dict['id']}' already exists.")
-            self._data["tasks"].append(task_dict)
-            self.save()
-            return copy.deepcopy(task_dict)
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                for existing in self._data["tasks"]:
+                    if existing["id"] == task_dict["id"]:
+                        raise ValueError(f"Task with id '{task_dict['id']}' already exists.")
+                self._data["tasks"].append(task_dict)
+                self._data["version"] = int(self._data.get("version", 0)) + 1
+                self._save_under_lock()
+                return copy.deepcopy(task_dict)
 
     def update_task(self, task_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
         with self._lock:
-            for t in self._data["tasks"]:
-                if t["id"] == task_id:
-                    t.update(updates)
-                    self.save()
-                    return copy.deepcopy(t)
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                for t in self._data["tasks"]:
+                    if t["id"] == task_id:
+                        t.update(updates)
+                        self._data["version"] = int(self._data.get("version", 0)) + 1
+                        self._save_under_lock()
+                        return copy.deepcopy(t)
         return None
 
     def upsert_tasks(self, tasks: list[dict[str, Any] | OperationalTask]) -> list[dict[str, Any]]:
         """Idempotently insert new tasks and update matching non-conflicting tasks without clobbering edits."""
         with self._lock:
-            existing_by_id = {t["id"]: t for t in self._data["tasks"]}
-            persisted: list[dict[str, Any]] = []
-            for t in tasks:
-                t_dict = t.to_dict() if isinstance(t, OperationalTask) else copy.deepcopy(t)
-                t_id = t_dict["id"]
-                if t_id in existing_by_id:
-                    target = existing_by_id[t_id]
-                    # Preserve user status if already changed from open
-                    user_status = target.get("status", "open")
-                    target.update({k: v for k, v in t_dict.items() if k != "status"})
-                    if user_status in ("done", "in_progress", "blocked"):
-                        target["status"] = user_status
-                    persisted.append(copy.deepcopy(target))
-                else:
-                    self._data["tasks"].append(t_dict)
-                    existing_by_id[t_id] = t_dict
-                    persisted.append(copy.deepcopy(t_dict))
-            self.save()
-            return persisted
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                existing_by_id = {t["id"]: t for t in self._data["tasks"]}
+                persisted: list[dict[str, Any]] = []
+                for t in tasks:
+                    t_dict = t.to_dict() if isinstance(t, OperationalTask) else copy.deepcopy(t)
+                    t_id = t_dict["id"]
+                    if t_id in existing_by_id:
+                        target = existing_by_id[t_id]
+                        user_status = target.get("status", "open")
+                        target.update({k: v for k, v in t_dict.items() if k != "status"})
+                        if user_status in ("done", "in_progress", "blocked"):
+                            target["status"] = user_status
+                        persisted.append(copy.deepcopy(target))
+                    else:
+                        self._data["tasks"].append(t_dict)
+                        existing_by_id[t_id] = t_dict
+                        persisted.append(copy.deepcopy(t_dict))
+                self._data["version"] = int(self._data.get("version", 0)) + 1
+                self._save_under_lock()
+                return persisted
 
     # -----------------------------------------------------------------------
     # Schedule Items (Day-of Run-of-Show)
     # -----------------------------------------------------------------------
     def all_schedule_items(self) -> list[dict[str, Any]]:
         with self._lock:
+            self._ensure_fresh()
             return copy.deepcopy(self._data["schedule"])
 
     def find_schedule_item(self, item_id: str) -> dict[str, Any] | None:
         with self._lock:
+            self._ensure_fresh()
             for item in self._data["schedule"]:
                 if item["id"] == item_id:
                     return copy.deepcopy(item)
@@ -616,20 +782,26 @@ class EventStore:
     def add_schedule_item(self, item: dict[str, Any] | ScheduleItem) -> dict[str, Any]:
         item_dict = item.to_dict() if isinstance(item, ScheduleItem) else copy.deepcopy(item)
         with self._lock:
-            for existing in self._data["schedule"]:
-                if existing["id"] == item_dict["id"]:
-                    raise ValueError(f"Schedule item with id '{item_dict['id']}' already exists.")
-            self._data["schedule"].append(item_dict)
-            self.save()
-            return copy.deepcopy(item_dict)
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                for existing in self._data["schedule"]:
+                    if existing["id"] == item_dict["id"]:
+                        raise ValueError(f"Schedule item with id '{item_dict['id']}' already exists.")
+                self._data["schedule"].append(item_dict)
+                self._data["version"] = int(self._data.get("version", 0)) + 1
+                self._save_under_lock()
+                return copy.deepcopy(item_dict)
 
     def update_schedule_item(self, item_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
         with self._lock:
-            for item in self._data["schedule"]:
-                if item["id"] == item_id:
-                    item.update(updates)
-                    self.save()
-                    return copy.deepcopy(item)
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                for item in self._data["schedule"]:
+                    if item["id"] == item_id:
+                        item.update(updates)
+                        self._data["version"] = int(self._data.get("version", 0)) + 1
+                        self._save_under_lock()
+                        return copy.deepcopy(item)
         return None
 
     # -----------------------------------------------------------------------
@@ -637,10 +809,12 @@ class EventStore:
     # -----------------------------------------------------------------------
     def all_briefings(self) -> list[dict[str, Any]]:
         with self._lock:
+            self._ensure_fresh()
             return copy.deepcopy(self._data["briefings"])
 
     def find_briefing(self, briefing_id: str) -> dict[str, Any] | None:
         with self._lock:
+            self._ensure_fresh()
             for b in self._data["briefings"]:
                 if b["id"] == briefing_id:
                     return copy.deepcopy(b)
@@ -649,40 +823,47 @@ class EventStore:
     def add_briefing(self, briefing: dict[str, Any] | Briefing) -> dict[str, Any]:
         briefing_dict = briefing.to_dict() if isinstance(briefing, Briefing) else copy.deepcopy(briefing)
         with self._lock:
-            for existing in self._data["briefings"]:
-                if existing["id"] == briefing_dict["id"]:
-                    raise ValueError(f"Briefing with id '{briefing_dict['id']}' already exists.")
-            self._data["briefings"].append(briefing_dict)
-            self.save()
-            return copy.deepcopy(briefing_dict)
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                for existing in self._data["briefings"]:
+                    if existing["id"] == briefing_dict["id"]:
+                        raise ValueError(f"Briefing with id '{briefing_dict['id']}' already exists.")
+                self._data["briefings"].append(briefing_dict)
+                self._data["version"] = int(self._data.get("version", 0)) + 1
+                self._save_under_lock()
+                return copy.deepcopy(briefing_dict)
 
     def update_briefing(self, briefing_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
         with self._lock:
-            for b in self._data["briefings"]:
-                if b["id"] == briefing_id:
-                    # Guard sent briefings against accidental in-place mutation of content
-                    if b.get("status") == "sent":
-                        immutable_fields = (
-                            "content",
-                            "rendered_body",
-                            "session_time",
-                            "arrival_time",
-                            "av_provisions",
-                            "notes",
-                        )
-                        if any(k in updates for k in immutable_fields):
-                            raise ValueError(
-                                f"Briefing '{briefing_id}' has already been marked as 'sent' and is immutable. "
-                                "Use upsert_briefing_version to archive the sent version and create a revised draft."
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                for b in self._data["briefings"]:
+                    if b["id"] == briefing_id:
+                        # Guard sent briefings against accidental in-place mutation of content
+                        if b.get("status") == "sent":
+                            immutable_fields = (
+                                "content",
+                                "rendered_body",
+                                "session_time",
+                                "arrival_time",
+                                "av_provisions",
+                                "notes",
                             )
-                    b.update(updates)
-                    self.save()
-                    return copy.deepcopy(b)
+                            if any(k in updates for k in immutable_fields):
+                                raise ValueError(
+                                    f"Briefing '{briefing_id}' has already been marked as 'sent' and is immutable. "
+                                    "Use upsert_briefing_version to archive the sent version and create a revised draft."
+                                )
+                        b.update(updates)
+                        self._data["version"] = int(self._data.get("version", 0)) + 1
+                        self._save_under_lock()
+                        return copy.deepcopy(b)
         return None
 
     def find_briefing_by_recipient(self, role: str, recipient_id: str) -> dict[str, Any] | None:
         """Find the active briefing for a specific role and recipient ID."""
         with self._lock:
+            self._ensure_fresh()
             for b in self._data["briefings"]:
                 if b.get("role", "").lower() == role.lower() and b.get("recipient_id", "").lower() == recipient_id.lower():
                     return copy.deepcopy(b)
@@ -693,40 +874,44 @@ class EventStore:
         b_dict = briefing.to_dict() if isinstance(briefing, Briefing) else copy.deepcopy(briefing)
         b_id = b_dict["id"]
         with self._lock:
-            for idx, existing in enumerate(self._data["briefings"]):
-                if existing["id"] == b_id:
-                    # Found existing briefing
-                    history = list(existing.get("history", []))
-                    current_status = existing.get("status", "draft")
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                for idx, existing in enumerate(self._data["briefings"]):
+                    if existing["id"] == b_id:
+                        # Found existing briefing
+                        history = list(existing.get("history", []))
+                        current_status = existing.get("status", "draft")
 
-                    # Archive current revision into history
-                    snapshot = {
-                        "version": existing.get("version", 1),
-                        "status": current_status,
-                        "archived_at": b_dict.get("updated_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                        "source_fingerprint": existing.get("source_fingerprint", ""),
-                        "notes": existing.get("notes", ""),
-                    }
-                    history.append(snapshot)
+                        # Archive current revision into history
+                        snapshot = {
+                            "version": existing.get("version", 1),
+                            "status": current_status,
+                            "archived_at": b_dict.get("updated_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            "source_fingerprint": existing.get("source_fingerprint", ""),
+                            "notes": existing.get("notes", ""),
+                        }
+                        history.append(snapshot)
 
-                    # If previously sent, do NOT silently overwrite: increment version and return to draft
-                    if current_status == "sent":
-                        b_dict["version"] = existing.get("version", 1) + 1
-                        b_dict["status"] = "draft"
-                    else:
-                        # For existing draft, increment version if source fingerprint changed
-                        if existing.get("source_fingerprint") and b_dict.get("source_fingerprint") != existing.get("source_fingerprint"):
+                        # If previously sent, do NOT silently overwrite: increment version and return to draft
+                        if current_status == "sent":
                             b_dict["version"] = existing.get("version", 1) + 1
+                            b_dict["status"] = "draft"
+                        else:
+                            # For existing draft, increment version if source fingerprint changed
+                            if existing.get("source_fingerprint") and b_dict.get("source_fingerprint") != existing.get("source_fingerprint"):
+                                b_dict["version"] = existing.get("version", 1) + 1
 
-                    b_dict["history"] = history
-                    self._data["briefings"][idx] = b_dict
-                    self.save()
-                    return copy.deepcopy(b_dict)
+                        b_dict["history"] = history
+                        self._data["briefings"][idx] = b_dict
+                        self._data["version"] = int(self._data.get("version", 0)) + 1
+                        self._save_under_lock()
+                        return copy.deepcopy(b_dict)
 
-            # Not found: new briefing
-            self._data["briefings"].append(b_dict)
-            self.save()
-            return copy.deepcopy(b_dict)
+                # Not found: new briefing
+                self._data["briefings"].append(b_dict)
+                self._data["version"] = int(self._data.get("version", 0)) + 1
+                self._save_under_lock()
+                return copy.deepcopy(b_dict)
 
     # -----------------------------------------------------------------------
     # Audit Trail (Append-Only)
@@ -734,11 +919,13 @@ class EventStore:
     def all_audit_events(self) -> list[dict[str, Any]]:
         """Return all recorded audit events (read-only copy)."""
         with self._lock:
+            self._ensure_fresh()
             return copy.deepcopy(self._data.get("audit_trail", []))
 
     def get_audit_event(self, event_id: str) -> dict[str, Any] | None:
         """Find a specific audit event by its event ID."""
         with self._lock:
+            self._ensure_fresh()
             for entry in self._data.get("audit_trail", []):
                 if entry.get("event_id") == event_id:
                     return copy.deepcopy(entry)
@@ -747,6 +934,7 @@ class EventStore:
     def find_audit_by_proposal(self, proposal_id: str) -> dict[str, Any] | None:
         """Find the audit record for a given proposal ID (used for idempotency and duplicate rejection)."""
         with self._lock:
+            self._ensure_fresh()
             for entry in self._data.get("audit_trail", []):
                 if entry.get("proposal_id") == proposal_id:
                     return copy.deepcopy(entry)
@@ -760,11 +948,14 @@ class EventStore:
         """
         evt_dict = event.to_dict() if isinstance(event, AuditEvent) else copy.deepcopy(event)
         with self._lock:
-            if "audit_trail" not in self._data:
-                self._data["audit_trail"] = []
-            self._data["audit_trail"].append(evt_dict)
-            self.save()
-            return copy.deepcopy(evt_dict)
+            with self._file_lock(exclusive=True):
+                self._ensure_fresh(force=True)
+                if "audit_trail" not in self._data:
+                    self._data["audit_trail"] = []
+                self._data["audit_trail"].append(evt_dict)
+                self._data["version"] = int(self._data.get("version", 0)) + 1
+                self._save_under_lock()
+                return copy.deepcopy(evt_dict)
 
 
 # ---------------------------------------------------------------------------
