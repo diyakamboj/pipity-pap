@@ -8,6 +8,7 @@ Maintains 100% backward compatibility with existing mock backend lookups and see
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import copy
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -208,6 +209,44 @@ class Briefing:
         )
 
 
+@dataclass
+class AuditEvent:
+    event_id: str
+    proposal_id: str
+    action_type: str
+    actor_id: str
+    actor_role: str
+    auth_source: str
+    timestamp: str
+    target_id: str
+    before_state: dict[str, Any] = field(default_factory=dict)
+    after_state: dict[str, Any] = field(default_factory=dict)
+    affected_records: dict[str, Any] = field(default_factory=dict)
+    outcome: str = "success"
+    notes: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AuditEvent:
+        return cls(
+            event_id=data["event_id"],
+            proposal_id=data.get("proposal_id", ""),
+            action_type=data.get("action_type", ""),
+            actor_id=data.get("actor_id", ""),
+            actor_role=data.get("actor_role", ""),
+            auth_source=data.get("auth_source", ""),
+            timestamp=data.get("timestamp", ""),
+            target_id=data.get("target_id", ""),
+            before_state=dict(data.get("before_state", {})),
+            after_state=dict(data.get("after_state", {})),
+            affected_records=dict(data.get("affected_records", {})),
+            outcome=data.get("outcome", "success"),
+            notes=data.get("notes", ""),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Persistent Event Store Implementation
 # ---------------------------------------------------------------------------
@@ -228,8 +267,10 @@ class EventStore:
             )
         self.storage_path = os.path.abspath(storage_path)
         self._lock = threading.RLock()
+        self._in_transaction: bool = False
         self._data: dict[str, Any] = {}
         self.load()
+
 
     # -----------------------------------------------------------------------
     # Persistence & Synchronization
@@ -281,6 +322,11 @@ class EventStore:
     def save(self) -> None:
         """Atomically persist store data to disk."""
         with self._lock:
+            if self._in_transaction:
+                raise RuntimeError(
+                    "Premature save called while an atomic transaction is active. "
+                    "Transactions must commit via transaction context manager only."
+                )
             dir_name = os.path.dirname(self.storage_path)
             if dir_name:
                 os.makedirs(dir_name, exist_ok=True)
@@ -315,6 +361,7 @@ class EventStore:
                 "tasks": copy.deepcopy(TASKS),
                 "schedule": copy.deepcopy(SCHEDULE_ITEMS),
                 "briefings": copy.deepcopy(BRIEFINGS),
+                "audit_trail": [],
             }
             self.save()
 
@@ -331,11 +378,52 @@ class EventStore:
             "tasks": copy.deepcopy(TASKS),
             "schedule": copy.deepcopy(SCHEDULE_ITEMS),
             "briefings": copy.deepcopy(BRIEFINGS),
+            "audit_trail": [],
         }
         for key, val in defaults.items():
             if key not in data or data[key] is None:
                 data[key] = val
         return data
+
+    @contextmanager
+    def transaction(self):
+        """Context manager for atomic multi-entity mutations.
+
+        Single-process concurrency:
+            Synchronized by self._lock (threading.RLock). All in-memory reads and
+            writes within the transaction block are thread-safe.
+
+        Multi-process concurrency limitation:
+            Atomic filesystem write via temp file + os.fsync + os.replace guarantees
+            that on POSIX systems the JSON file on disk is never corrupted or left in
+            a partial state. However, if multiple independent OS processes run against
+            the same storage path concurrently without inter-process file locks (e.g. fcntl.flock)
+            or an external database, concurrent read-modify-write cycles can overwrite each other.
+            For production multi-worker environments, use an ACID database backend (Cosmos DB,
+            PostgreSQL) with row/document locking.
+
+        Atomicity & Rollback:
+            Modifications made to the yielded `staged` dictionary are only committed
+            if the context block exits without error AND the disk write (save) succeeds.
+            If any exception occurs inside the block or during persistence, in-memory state
+            is rolled back to the pre-transaction snapshot, and no disk write occurs.
+        """
+        with self._lock:
+            if self._in_transaction:
+                raise RuntimeError("Nested transactions are not supported.")
+            snapshot = copy.deepcopy(self._data)
+            staged = copy.deepcopy(self._data)
+            self._in_transaction = True
+            try:
+                yield staged
+                self._data = staged
+                self._in_transaction = False
+                self.save()
+            except Exception:
+                self._data = snapshot
+                self._in_transaction = False
+                raise
+
 
     # -----------------------------------------------------------------------
     # Event Profile & Venue Constraints
@@ -639,6 +727,44 @@ class EventStore:
             self._data["briefings"].append(b_dict)
             self.save()
             return copy.deepcopy(b_dict)
+
+    # -----------------------------------------------------------------------
+    # Audit Trail (Append-Only)
+    # -----------------------------------------------------------------------
+    def all_audit_events(self) -> list[dict[str, Any]]:
+        """Return all recorded audit events (read-only copy)."""
+        with self._lock:
+            return copy.deepcopy(self._data.get("audit_trail", []))
+
+    def get_audit_event(self, event_id: str) -> dict[str, Any] | None:
+        """Find a specific audit event by its event ID."""
+        with self._lock:
+            for entry in self._data.get("audit_trail", []):
+                if entry.get("event_id") == event_id:
+                    return copy.deepcopy(entry)
+            return None
+
+    def find_audit_by_proposal(self, proposal_id: str) -> dict[str, Any] | None:
+        """Find the audit record for a given proposal ID (used for idempotency and duplicate rejection)."""
+        with self._lock:
+            for entry in self._data.get("audit_trail", []):
+                if entry.get("proposal_id") == proposal_id:
+                    return copy.deepcopy(entry)
+            return None
+
+    def record_audit_event(self, event: dict[str, Any] | AuditEvent) -> dict[str, Any]:
+        """Append an audit event to the audit trail and persist atomically.
+
+        The public API is strictly append-only: there are no update or delete methods
+        for audit trail entries.
+        """
+        evt_dict = event.to_dict() if isinstance(event, AuditEvent) else copy.deepcopy(event)
+        with self._lock:
+            if "audit_trail" not in self._data:
+                self._data["audit_trail"] = []
+            self._data["audit_trail"].append(evt_dict)
+            self.save()
+            return copy.deepcopy(evt_dict)
 
 
 # ---------------------------------------------------------------------------
