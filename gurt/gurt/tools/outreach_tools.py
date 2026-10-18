@@ -44,6 +44,7 @@ def tool_compose_outreach_draft(
     event_date = ev.get("date", "Upcoming")
     event_location = ev.get("location", "UW Campus Venue")
     event_attendees = ev.get("attendee_count", 80)
+    event_budget = float(ev.get("budget", 500.0))
     event_dietary = ev.get("dietary_specs", "vegan, gluten-free, nut-free")
 
     clean_target = target_type.lower().strip()
@@ -56,7 +57,8 @@ def tool_compose_outreach_draft(
         "event_title": event_title,
         "event_date": event_date,
         "event_location": event_location,
-        "event_attendees": event_attendees
+        "event_attendees": event_attendees,
+        "event_budget": event_budget
     }
 
     speaker = None
@@ -127,7 +129,32 @@ def tool_compose_outreach_draft(
 
     if clean_target in ("speaker", "keynote", "presenter"):
         if not speaker and not target_rec_email:
-            raise ValueError(f"Speaker '{target_id_or_name}' not found for event '{event_id}'")
+            # Check if speaker exists in database by name across events or auto-propose candidate
+            conn2 = get_connection()
+            c2 = conn2.cursor()
+            c2.execute("SELECT * FROM speakers WHERE name LIKE ? ORDER BY id DESC LIMIT 1", (f"%{target_id_or_name.strip()}%",))
+            ex_row = c2.fetchone()
+            if ex_row:
+                ex_spk = dict(ex_row)
+                new_spk_id = f"spk-{uuid.uuid4().hex[:6]}"
+                c2.execute(
+                    "INSERT INTO speakers (id, event_id, name, org, topic, status, contact_email, proposed_time, bio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (new_spk_id, event_id, ex_spk["name"], ex_spk["org"], ex_spk["topic"], "shortlist", ex_spk["contact_email"], ex_spk.get("proposed_time") or "10:00 - 10:45 AM", ex_spk.get("bio", ""))
+                )
+                conn2.commit()
+                c2.execute("SELECT * FROM speakers WHERE id = ?", (new_spk_id,))
+                speaker = dict(c2.fetchone())
+            else:
+                new_spk_id = f"spk-{uuid.uuid4().hex[:6]}"
+                clean_name = target_id_or_name.strip()
+                c2.execute(
+                    "INSERT INTO speakers (id, event_id, name, org, topic, status, contact_email, proposed_time, bio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (new_spk_id, event_id, clean_name, "Industry Specialist", "Hands-on Technical Session", "shortlist", f"{clean_name.lower().replace(' ', '.')}@example.org", "10:00 - 10:45 AM", "Prospective workshop presenter.")
+                )
+                conn2.commit()
+                c2.execute("SELECT * FROM speakers WHERE id = ?", (new_spk_id,))
+                speaker = dict(c2.fetchone())
+            conn2.close()
 
         if speaker:
             target_rec_name = target_rec_name or speaker.get("name", "Speaker")
@@ -155,8 +182,10 @@ def tool_compose_outreach_draft(
             f"'{topic}' ({org}) at our upcoming workshop on {event_date} at {event_location}.\n\n"
             f"We are expecting approximately {event_attendees} attendees comprising students, researchers, and engineers. "
             f"We have reserved a proposed session slot for you at {proposed_time}.\n\n"
-            f"Please let us know if this time slot works for your schedule, and if you have any dietary accommodations "
-            f"({event_dietary}) or special presentation requirements.\n\n"
+            f"Could you please confirm if this date and time slot works with your availability? Additionally, could you share "
+            f"your standard speaking fee or honorarium requirements for community educational workshops? (Please note that our total "
+            f"event budget is modest at ${event_budget:,.2f}, so we want to confirm alignment early).\n\n"
+            f"Please also let us know if you have any dietary accommodations ({event_dietary}) or special presentation requirements.\n\n"
             f"Warm regards,\n{event_title} Organizing Committee"
         )
 

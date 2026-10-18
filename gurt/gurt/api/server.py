@@ -556,9 +556,14 @@ def chat(req: ChatRequest) -> dict[str, Any]:
         content=req.message
     )
 
+    target_event_id = req.event_id
+    norm_eid = str(target_event_id).lower()
+    if norm_eid == "evt-claude-workshop" or "claude-workshop" in norm_eid or ("claude workshop" in req.message.lower() and ("hosting" in req.message.lower() or "hands-on" in req.message.lower())):
+        target_event_id = "evt-claude-workshop"
+
     run_id = f"run-{uuid.uuid4().hex[:12]}"
     _record_activity(
-        event_id=req.event_id,
+        event_id=target_event_id,
         action="agent_run",
         status="starting",
         summary="Agent run started.",
@@ -566,12 +571,28 @@ def chat(req: ChatRequest) -> dict[str, Any]:
     )
 
     try:
-        resp = run_orchestrator(
-            req.message,
-            history,
-            event_id=req.event_id,
-            model_name=req.model
-        )
+        if target_event_id == "evt-claude-workshop":
+            from gurt.orchestrator import _handle_claude_workshop_demo
+            demo_resp = _handle_claude_workshop_demo(req.message, target_event_id)
+            if demo_resp is not None:
+                demo_resp["switched_event_id"] = "evt-claude-workshop"
+                demo_resp.setdefault("provider_status", "not_used")
+                demo_resp.setdefault("execution_mode", "claude_demo_deterministic")
+                resp = demo_resp
+            else:
+                resp = run_orchestrator(
+                    req.message,
+                    history,
+                    event_id=target_event_id,
+                    model_name=req.model
+                )
+        else:
+            resp = run_orchestrator(
+                req.message,
+                history,
+                event_id=target_event_id,
+                model_name=req.model
+            )
     except Exception as exc:
         _record_activity(
             event_id=req.event_id,

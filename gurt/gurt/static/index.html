@@ -220,7 +220,7 @@
                 <ul>
                   <li><strong>Event Brief & Run-of-Show:</strong> Reviewing goals, constraints, and synthesizing realistic schedules.</li>
                   <li><strong>Outreach:</strong> Researching speakers & sponsors, drafting invites, and preventing duplicate actions.</li>
-                  <li><strong>Vendors:</strong> Sourcing catering ($13.50/head), badges, and supplier contracts against our $2,500 budget.</li>
+                  <li><strong>Vendors:</strong> Sourcing catering ($13.50/head), badges, and supplier contracts against our event budget.</li>
                   <li><strong>PDF Contracts:</strong> Auto-filling venue facility booking forms and flagging unresolved organizer blanks.</li>
                 </ul>
                 <p>Use the <strong>left navigation</strong> or prompt me directly below!</p>
@@ -411,7 +411,7 @@
               <div class="pane-header">
                 <div>
                   <h3>Vendor Sourcing &amp; Needs</h3>
-                  <p class="pane-desc">Catering, badges, AV specs — evaluated against $2,500 budget.</p>
+                  <p class="pane-desc" id="vendor-pane-desc">Catering, badges, AV specs — evaluated against event budget.</p>
                 </div>
                 <div style="display:flex; gap:6px;">
                   <button class="btn-small" onclick="loadVendorComparison('Catering')" title="Compare quotes against requirements">📊 Compare Catering</button>
@@ -488,7 +488,7 @@
                   <div class="guardrail-card-top">
                     <span class="guardrail-icon">💰</span>
                     <div>
-                      <div class="guardrail-name">Budget Ceiling Guardrail ($2,500 Hard Cap)</div>
+                      <div class="guardrail-name">Budget Ceiling Guardrail (Event Hard Cap)</div>
                       <div class="guardrail-desc">Any vendor quote or cumulative logistics commitment that exceeds the event budget triggers an automatic warning and requires explicit human sign-off.</div>
                     </div>
                   </div>

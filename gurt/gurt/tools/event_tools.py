@@ -1015,16 +1015,16 @@ def tool_compare_vendor_quotes(category: str = "Catering", event_id: str = "evt-
 
     # Determine baseline facts from requirement or event brief
     if cat_req:
-        target_headcount = int(cat_req.get("headcount") or ev.get("attendee_count", 80))
-        budget = float(cat_req.get("budget_allocated") or ev.get("budget", 2500.0))
+        target_headcount = int(cat_req.get("headcount") or ev.get("attendee_count") or 80)
+        budget = float(cat_req.get("budget_allocated") or ev.get("budget") or 500.0)
         target_dietary = cat_req.get("dietary_needs") or ev.get("dietary_specs", "")
         target_window = cat_req.get("service_window", "")
         target_location = cat_req.get("location") or ev.get("location", "")
         req_unknowns = cat_req.get("unknowns", "")
         req_id = cat_req.get("id")
     else:
-        target_headcount = int(ev.get("attendee_count", 80))
-        budget = float(ev.get("budget", 2500.0))
+        target_headcount = int(ev.get("attendee_count") or 80)
+        budget = float(ev.get("budget") or 500.0)
         target_dietary = ev.get("dietary_specs", "")
         target_window = ""
         target_location = ev.get("location", "")
@@ -1044,6 +1044,8 @@ def tool_compare_vendor_quotes(category: str = "Catering", event_id: str = "evt-
         return {
             "status": "no_quotes_found",
             "category": category,
+            "event_budget": budget,
+            "attendee_count": target_headcount,
             "message": f"No quotes currently logged under category '{category}' for event '{ev.get('title')}'. Suggest adding quotes via tool_add_detailed_vendor_quote."
         }
 

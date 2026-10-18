@@ -340,11 +340,34 @@ def fill_event_pdf_form(
         facts_mapping["expected_attendance"] = str(event["attendee_count"])
 
     # Organizer identity on record (only map if recorded)
-    if event.get("contact_email") or event.get("organizer_email"):
-        facts_mapping["organizer_email"] = event.get("contact_email") or event.get("organizer_email")
+    if event.get("organizer_name"):
+        org_title = str(event["organizer_name"])
+        if event.get("organization"):
+            org_title += f" ({event['organization']})"
+        facts_mapping["organizer_name"] = org_title
+    elif event.get("venue_contact"):
+        vc = str(event["venue_contact"])
+        m_name = re.match(r"^([^,]+?)(?:\s*\(([^)]+)\))?(?:,\s*|\s*$)", vc)
+        if m_name and not any(w in m_name.group(1).lower() for w in ["office", "hub", "student", "activities"]):
+            facts_mapping["organizer_name"] = vc.split(",")[0].strip()
     elif event_id == "evt-dubhacks-2026":
         facts_mapping["organizer_name"] = "Sam Operations (DubHacks Lead)"
+
+    if event.get("organizer_email") or event.get("contact_email"):
+        facts_mapping["organizer_email"] = event.get("organizer_email") or event.get("contact_email")
+    elif event.get("venue_contact") and "@" in str(event["venue_contact"]):
+        m_email = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", str(event["venue_contact"]))
+        if m_email:
+            facts_mapping["organizer_email"] = m_email.group(0)
+    elif event_id == "evt-dubhacks-2026":
         facts_mapping["organizer_email"] = "operations@dubhacks.example"
+
+    if event.get("organizer_phone") or event.get("phone"):
+        facts_mapping["organizer_phone"] = event.get("organizer_phone") or event.get("phone")
+    elif event.get("venue_contact"):
+        m_phone = re.search(r"\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}", str(event["venue_contact"]))
+        if m_phone:
+            facts_mapping["organizer_phone"] = m_phone.group(0)
 
     # Catering & Vendors
     if catering_vendor:
@@ -476,6 +499,7 @@ def fill_event_pdf_form(
         "document_id": doc_record["id"],
         "template_name": template_path.name,
         "output_file": out_filename,
+        "output_path": str(out_path),
         "download_url": download_relative_url,
         "version": version,
         "is_draft": True,

@@ -22,6 +22,13 @@ SYNTHETIC_RESEARCH_FIXTURES: dict[str, list[dict[str, str]]] = {
             "source": "[Synthetic Research Fixture] Verified academic profile & conference directory"
         },
         {
+            "name": "Marcus Rivera",
+            "affiliation": "Anthropic / Independent Researcher",
+            "relevance": "Expert in agentic evaluations, tool use benchmarks, and Claude workflow orchestration.",
+            "recent_work": "Author of practical FastMCP agent guides and benchmark harness lead for agentic safety.",
+            "source": "[Synthetic Research Fixture] Verified Claude & Agentic AI practitioner directory"
+        },
+        {
             "name": "Prof. David Thorne",
             "affiliation": "UW Paul G. Allen School",
             "relevance": "Researcher in human-in-the-loop agent authorization systems.",

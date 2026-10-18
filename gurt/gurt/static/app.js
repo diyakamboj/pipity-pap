@@ -583,7 +583,7 @@ function appendMessage(role, text, toolCalls = [], modelUsed = null) {
               <span class="action-card-title">🏪 Vendor Sourcing &amp; Quotes</span>
               <span class="badge badge-accent">Budget Tracked</span>
             </div>
-            <div class="action-card-desc">Catering quotes and unknown specifications logged against the $2,500 hard budget limit.</div>
+            <div class="action-card-desc">Catering quotes and unknown specifications evaluated against the ${window.currentEventBudget ? '$' + Number(window.currentEventBudget).toLocaleString() : '$500'} event budget.</div>
             <button class="action-card-btn" onclick="openSideCanvas('vendors', '🏪', 'Vendors &amp; Sourcing')">Compare Quotes in Canvas ↗</button>
           </div>
         `;
@@ -682,6 +682,12 @@ async function loadOverview() {
 
     const spkEl = document.getElementById('stat-speakers');
     if (spkEl) spkEl.textContent = data.speakers ? data.speakers.split(' ')[0] : '0/0';
+
+    window.currentEventBudget = ev.budget || 500;
+    const vendorDescEl = document.getElementById('vendor-pane-desc');
+    if (vendorDescEl) {
+      vendorDescEl.textContent = `Catering, badges, AV specs — evaluated against $${Number(ev.budget || 500).toLocaleString()} budget.`;
+    }
   } catch (e) {}
 }
 

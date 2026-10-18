@@ -210,6 +210,11 @@ def init_db() -> None:
     _ensure_column(cursor, "events", "venue_contact TEXT")
     _ensure_column(cursor, "events", "dietary_specs TEXT")
     _ensure_column(cursor, "events", "av_requirements TEXT")
+    _ensure_column(cursor, "events", "organizer_name TEXT DEFAULT ''")
+    _ensure_column(cursor, "events", "organizer_email TEXT DEFAULT ''")
+    _ensure_column(cursor, "events", "organizer_phone TEXT DEFAULT ''")
+    _ensure_column(cursor, "events", "organization TEXT DEFAULT ''")
+    _ensure_column(cursor, "events", "venue_confirmation_status TEXT DEFAULT 'unconfirmed'")
     _ensure_column(cursor, "events", "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
     _ensure_column(cursor, "events", "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
@@ -320,6 +325,51 @@ def init_db() -> None:
             ("vrq-lov-002", "evt-loveable-2026", "Badges & Signage", "20 name badges and 1 welcome directional sign", 20, 60.0, "todo", "Use Seattle Tech Hub color printer.")
         ]
         cursor.executemany("INSERT INTO vendor_requirements (id, event_id, category, specification, headcount, budget_allocated, status, unknowns) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", loveable_reqs)
+
+    # Seed distinct Claude Workshop record if not present
+    cursor.execute("SELECT COUNT(*) FROM events WHERE id = 'evt-claude-workshop'")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("""
+            INSERT INTO events (
+                id, title, date, location, attendee_count, budget, status,
+                goals, theme, venue_contact, dietary_specs, av_requirements,
+                organizer_name, organizer_email, organizer_phone, organization, venue_confirmation_status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            "evt-claude-workshop",
+            "Claude Workshop",
+            "2026-11-22 13:00",
+            "Blueprint office in Bellevue",
+            40,
+            500.0,
+            "planning",
+            "Hands-on Claude and agentic coding workshop for 40 builders with practical tool use exercises.",
+            "Claude Tool Calling & FastMCP Development",
+            "Blueprint Building Facilities (facilities@blueprint.example)",
+            "Nut-free snacks; vegetarian and gluten-free cookies & coffee.",
+            "Display monitor, high-speed Wi-Fi, 1 handheld mic.",
+            "",
+            "",
+            "",
+            "",
+            "unconfirmed"
+        ))
+
+        # Seed distinct vendor requirement for Claude Workshop
+        claude_reqs = [
+            ("vrq-claude-001", "evt-claude-workshop", "Catering", "Afternoon refreshments & coffee for 40 attendees ($500 event cap)", 40, 500.0, "quoted", "Verify nut-free facility and delivery timing.")
+        ]
+        cursor.executemany("INSERT INTO vendor_requirements (id, event_id, category, specification, headcount, budget_allocated, status, unknowns) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", claude_reqs)
+
+    # Seed distinct pre-researched speakers for Claude Workshop if empty
+    cursor.execute("SELECT COUNT(*) FROM speakers WHERE event_id = 'evt-claude-workshop'")
+    if cursor.fetchone()[0] == 0:
+        claude_speakers = [
+            ("spk-cld-001", "evt-claude-workshop", "Marcus Rivera", "Anthropic / Independent", "Claude Tool Calling & FastMCP Development", "shortlist", "mrivera@example.com", "01:30 - 02:15 PM", "Core contributor to agent testing benchmarks and Claude agent evaluation."),
+            ("spk-cld-002", "evt-claude-workshop", "Dr. Alicia Chen", "UW AI Institute", "Multi-Agent Coordination & Safety", "shortlist", "alicia.chen@cs.washington.edu", "02:30 - 03:15 PM", "Associate professor researching multi-agent autonomy and safety bounds.")
+        ]
+        cursor.executemany("INSERT INTO speakers (id, event_id, name, org, topic, status, contact_email, proposed_time, bio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", claude_speakers)
 
     # Check if benchmark event already seeded
     cursor.execute("SELECT COUNT(*) FROM events")
@@ -465,6 +515,10 @@ def get_event_brief(event_id: str | None = None) -> dict[str, Any]:
             # Also try matching by title case-insensitively
             c.execute("SELECT * FROM events WHERE title LIKE ? LIMIT 1", (f"%{event_id}%",))
             row = c.fetchone()
+        if not row and event_id.startswith("evt-"):
+            clean_title = event_id.replace("evt-", "").replace("-", " ")
+            c.execute("SELECT * FROM events WHERE title LIKE ? LIMIT 1", (f"%{clean_title}%",))
+            row = c.fetchone()
     if not row:
         c.execute("SELECT * FROM events ORDER BY created_at ASC LIMIT 1")
         row = c.fetchone()
@@ -479,7 +533,9 @@ def update_event_brief(event_id: str, updates: dict[str, Any]) -> dict[str, Any]
     c = conn.cursor()
     allowed_fields = [
         "title", "date", "location", "attendee_count", "budget", "status",
-        "goals", "theme", "venue_contact", "dietary_specs", "av_requirements"
+        "goals", "theme", "venue_contact", "dietary_specs", "av_requirements",
+        "organizer_name", "organizer_email", "organizer_phone", "organization",
+        "venue_confirmation_status"
     ]
     set_clauses = []
     values = []
@@ -550,11 +606,19 @@ def create_event_brief(brief: dict[str, Any]) -> dict[str, Any]:
     location = brief.get("location", "UW Campus Venue")
     date_str = brief.get("date", "2026-11-20 09:00")
 
+    organizer_name = brief.get("organizer_name", "")
+    organizer_email = brief.get("organizer_email", "")
+    organizer_phone = brief.get("organizer_phone", "")
+    organization = brief.get("organization", "")
+    venue_confirmation_status = brief.get("venue_confirmation_status", "unconfirmed")
+
     c.execute("""
         INSERT INTO events (
             id, title, date, location, attendee_count, budget, status,
-            goals, theme, venue_contact, dietary_specs, av_requirements, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            goals, theme, venue_contact, dietary_specs, av_requirements,
+            organizer_name, organizer_email, organizer_phone, organization,
+            venue_confirmation_status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         event_id,
         title,
@@ -568,6 +632,11 @@ def create_event_brief(brief: dict[str, Any]) -> dict[str, Any]:
         brief.get("venue_contact", ""),
         brief.get("dietary_specs", "Vegetarian, Vegan, GF options required."),
         brief.get("av_requirements", "Microphone, presentation display/projector, Wi-Fi."),
+        organizer_name,
+        organizer_email,
+        organizer_phone,
+        organization,
+        venue_confirmation_status,
         now,
         now
     ))
@@ -912,6 +981,9 @@ def list_action_proposals(
                     pass
         rows.append(d)
     return rows
+
+
+get_action_proposals = list_action_proposals
 
 
 def get_vendor_requirements(event_id: str = "evt-dubhacks-2026") -> list[dict[str, Any]]:
