@@ -42,10 +42,18 @@ from gurt.db import (
     get_memories,
     save_memory,
     delete_memory,
-    get_audit_logs
+    get_audit_logs,
+    get_action_proposal
 )
 from gurt.orchestrator import run_orchestrator
-from gurt.tools.outreach_tools import execute_approved_action, dismiss_action, tool_update_draft
+from gurt.tools.outreach_tools import (
+    execute_approved_action,
+    dismiss_action,
+    tool_update_draft,
+    tool_compose_outreach_draft,
+    tool_approve_outreach,
+    tool_dispatch_approved_action
+)
 from gurt.tools.event_tools import (
     tool_create_task,
     tool_update_task_status,
@@ -261,6 +269,41 @@ class BriefUpdateRequest(BaseModel):
 class DraftUpdateRequest(BaseModel):
     subject: str | None = None
     message_body: str | None = None
+    recipient_email: str | None = None
+    recipient_name: str | None = None
+    event_id: str | None = None
+    actor_id: str = "organizer"
+
+
+class ComposeOutreachRequest(BaseModel):
+    target_type: str = "speaker"
+    target_id_or_name: str
+    event_id: str = "evt-dubhacks-2026"
+    custom_instructions: str = ""
+    recipient_email: str | None = None
+    recipient_name: str | None = None
+    save_as_draft_only: bool = False
+    actor_id: str = "organizer"
+
+
+class ActionApproveRequest(BaseModel):
+    actor_id: str = "organizer"
+    event_id: str | None = None
+    dispatch_now: bool = True
+    force_simulation: bool = True
+
+
+class ActionDispatchRequest(BaseModel):
+    actor_id: str = "organizer"
+    event_id: str | None = None
+    force_simulation: bool = True
+    simulate_failure: bool = False
+    simulate_unconfirmed: bool = False
+
+
+class ActionDismissRequest(BaseModel):
+    actor_id: str = "organizer"
+    event_id: str | None = None
 
 
 class SchedulePreviewRequest(BaseModel):
@@ -445,25 +488,101 @@ def get_actions(event_id: str = Query("evt-dubhacks-2026")) -> list[dict[str, An
     return query_records("action_proposals", event_id=event_id)
 
 
+@app.post("/api/actions/compose")
+def compose_action_endpoint(req: ComposeOutreachRequest) -> dict[str, Any]:
+    try:
+        return tool_compose_outreach_draft(
+            target_type=req.target_type,
+            target_id_or_name=req.target_id_or_name,
+            event_id=req.event_id,
+            custom_instructions=req.custom_instructions,
+            recipient_email=req.recipient_email,
+            recipient_name=req.recipient_name,
+            save_as_draft_only=req.save_as_draft_only,
+            actor_id=req.actor_id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/actions/{action_id}")
+def get_action_proposal_endpoint(action_id: str, event_id: str | None = None) -> dict[str, Any]:
+    action = get_action_proposal(action_id, event_id=event_id)
+    if not action:
+        raise HTTPException(status_code=404, detail=f"Action proposal '{action_id}' not found")
+    return action
+
+
 @app.patch("/api/actions/{action_id}")
 def edit_action_endpoint(action_id: str, req: DraftUpdateRequest) -> dict[str, Any]:
-    result = tool_update_draft(action_id, subject=req.subject, message_body=req.message_body)
+    result = tool_update_draft(
+        action_id,
+        subject=req.subject,
+        message_body=req.message_body,
+        recipient_email=req.recipient_email,
+        recipient_name=req.recipient_name,
+        event_id=req.event_id,
+        actor_id=req.actor_id
+    )
     if "error" in result:
-        raise HTTPException(status_code=400, detail=result["error"])
+        status_code = 404 if "not found" in result["error"].lower() else 400
+        raise HTTPException(status_code=status_code, detail=result["error"])
     return result
 
 
 @app.post("/api/actions/{action_id}/approve")
-def approve_action(action_id: str) -> dict[str, Any]:
-    result = execute_approved_action(action_id)
+def approve_action(action_id: str, req: ActionApproveRequest | None = None) -> dict[str, Any]:
+    actor_id = req.actor_id if req else "organizer"
+    event_id = req.event_id if req else None
+    dispatch_now = req.dispatch_now if req else True
+    force_simulation = req.force_simulation if req else True
+
+    result = tool_approve_outreach(
+        action_id=action_id,
+        event_id=event_id,
+        actor_id=actor_id,
+        dispatch_now=dispatch_now,
+        force_simulation=force_simulation
+    )
     if "error" in result:
-        raise HTTPException(status_code=400, detail=result["error"])
+        status_code = 404 if "not found" in result["error"].lower() else 400
+        raise HTTPException(status_code=status_code, detail=result["error"])
+    return result
+
+
+@app.post("/api/actions/{action_id}/dispatch")
+def dispatch_action_endpoint(action_id: str, req: ActionDispatchRequest | None = None) -> dict[str, Any]:
+    actor_id = req.actor_id if req else "organizer"
+    event_id = req.event_id if req else None
+    force_simulation = req.force_simulation if req else True
+    simulate_failure = req.simulate_failure if req else False
+    simulate_unconfirmed = req.simulate_unconfirmed if req else False
+
+    result = tool_dispatch_approved_action(
+        action_id=action_id,
+        event_id=event_id,
+        actor_id=actor_id,
+        force_simulation=force_simulation,
+        simulate_failure=simulate_failure,
+        simulate_unconfirmed=simulate_unconfirmed
+    )
+    if "error" in result:
+        status_code = 404 if "not found" in result["error"].lower() else 400
+        raise HTTPException(status_code=status_code, detail=result["error"])
     return result
 
 
 @app.post("/api/actions/{action_id}/dismiss")
-def dismiss_action_endpoint(action_id: str) -> dict[str, Any]:
-    return dismiss_action(action_id)
+def dismiss_action_endpoint(action_id: str, req: ActionDismissRequest | None = None) -> dict[str, Any]:
+    actor_id = req.actor_id if req else "organizer"
+    event_id = req.event_id if req else None
+    result = dismiss_action(action_id, event_id=event_id, actor_id=actor_id)
+    if "error" in result:
+        status_code = 404 if "not found" in result["error"].lower() else 400
+        raise HTTPException(status_code=status_code, detail=result["error"])
+    return result
 
 
 @app.patch("/api/tasks/{task_id}/status")

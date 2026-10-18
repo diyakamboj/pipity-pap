@@ -8,12 +8,256 @@ Prevents duplicate pending actions and allows draft editing before approval.
 from __future__ import annotations
 
 import json
+import os
+import sys
 import uuid
 from datetime import datetime
 from typing import Any
 import httpx
 from gurt.config import settings
-from gurt.db import get_connection
+from gurt.db import (
+    get_connection,
+    get_event_brief,
+    get_action_proposal,
+    update_action_proposal,
+    record_action_approval,
+    list_action_proposals,
+    log_audit_event
+)
+
+
+def tool_compose_outreach_draft(
+    target_type: str,
+    target_id_or_name: str,
+    event_id: str = "evt-dubhacks-2026",
+    custom_instructions: str = "",
+    recipient_email: str | None = None,
+    recipient_name: str | None = None,
+    save_as_draft_only: bool = False,
+    actor_id: str = "organizer"
+) -> dict[str, Any]:
+    """Generate a draft outreach email for a speaker, sponsor, or vendor using saved event facts.
+    Saves the generated draft as a pending action proposal with event isolation.
+    """
+    ev = get_event_brief(event_id)
+    event_title = ev.get("title", "Event")
+    event_date = ev.get("date", "Upcoming")
+    event_location = ev.get("location", "UW Campus Venue")
+    event_attendees = ev.get("attendee_count", 80)
+    event_dietary = ev.get("dietary_specs", "vegan, gluten-free, nut-free")
+
+    clean_target = target_type.lower().strip()
+    target_rec_name = recipient_name or ""
+    target_rec_email = recipient_email or ""
+    subject = ""
+    message_body = ""
+    action_type = "speaker_outreach"
+    facts_used = {
+        "event_title": event_title,
+        "event_date": event_date,
+        "event_location": event_location,
+        "event_attendees": event_attendees
+    }
+
+    speaker = None
+    sponsor = None
+    vendor = None
+    req_row = None
+
+    conn = get_connection()
+    c = conn.cursor()
+    try:
+        if clean_target in ("speaker", "keynote", "presenter"):
+            action_type = "speaker_outreach"
+            c.execute(
+                "SELECT * FROM speakers WHERE event_id = ? AND (id = ? OR LOWER(TRIM(name)) = LOWER(?))",
+                (event_id, target_id_or_name.strip(), target_id_or_name.strip())
+            )
+            rows = c.fetchall()
+            if not rows:
+                c.execute(
+                    "SELECT * FROM speakers WHERE event_id = ? AND name LIKE ?",
+                    (event_id, f"%{target_id_or_name.strip()}%")
+                )
+                rows = c.fetchall()
+            if rows:
+                speaker = dict(rows[0])
+
+        elif clean_target in ("sponsor", "partner"):
+            action_type = "sponsor_outreach"
+            c.execute(
+                "SELECT * FROM sponsors WHERE event_id = ? AND (id = ? OR LOWER(TRIM(name)) = LOWER(?))",
+                (event_id, target_id_or_name.strip(), target_id_or_name.strip())
+            )
+            rows = c.fetchall()
+            if not rows:
+                c.execute(
+                    "SELECT * FROM sponsors WHERE event_id = ? AND name LIKE ?",
+                    (event_id, f"%{target_id_or_name.strip()}%")
+                )
+                rows = c.fetchall()
+            if rows:
+                sponsor = dict(rows[0])
+
+        elif clean_target in ("vendor", "catering", "caterer", "supplier"):
+            action_type = "vendor_quote_approval"
+            c.execute(
+                "SELECT * FROM vendors WHERE event_id = ? AND (id = ? OR LOWER(TRIM(company_name)) = LOWER(?))",
+                (event_id, target_id_or_name.strip(), target_id_or_name.strip())
+            )
+            rows = c.fetchall()
+            if not rows:
+                c.execute(
+                    "SELECT * FROM vendors WHERE event_id = ? AND company_name LIKE ?",
+                    (event_id, f"%{target_id_or_name.strip()}%")
+                )
+                rows = c.fetchall()
+            if rows:
+                vendor = dict(rows[0])
+
+            c.execute("SELECT * FROM vendor_requirements WHERE event_id = ? AND category LIKE '%cater%' LIMIT 1", (event_id,))
+            req_rows = c.fetchall()
+            if req_rows:
+                req_row = dict(req_rows[0])
+        else:
+            raise ValueError(f"Unsupported target_type '{target_type}'. Must be 'speaker', 'sponsor', or 'vendor'.")
+    finally:
+        c.close()
+        conn.close()
+
+    if clean_target in ("speaker", "keynote", "presenter"):
+        if not speaker and not target_rec_email:
+            raise ValueError(f"Speaker '{target_id_or_name}' not found for event '{event_id}'")
+
+        if speaker:
+            target_rec_name = target_rec_name or speaker.get("name", "Speaker")
+            target_rec_email = target_rec_email or speaker.get("contact_email") or f"{target_rec_name.lower().replace(' ', '.')}@example.org"
+            topic = speaker.get("topic") or "Keynote Presentation"
+            org = speaker.get("org") or "Guest Institution"
+            proposed_time = speaker.get("proposed_time") or "10:00 AM - 10:45 AM"
+        else:
+            target_rec_name = target_rec_name or target_id_or_name
+            topic = "Guest Presentation"
+            org = "Industry"
+            proposed_time = "10:00 AM - 10:45 AM"
+
+        facts_used.update({
+            "speaker_name": target_rec_name,
+            "speaker_topic": topic,
+            "speaker_org": org,
+            "proposed_time": proposed_time
+        })
+
+        subject = f"Speaker Invitation: {event_title} — {topic}"
+        message_body = (
+            f"Dear {target_rec_name},\n\n"
+            f"On behalf of the organizing team for {event_title}, we would be honored to invite you to present on "
+            f"'{topic}' ({org}) at our upcoming workshop on {event_date} at {event_location}.\n\n"
+            f"We are expecting approximately {event_attendees} attendees comprising students, researchers, and engineers. "
+            f"We have reserved a proposed session slot for you at {proposed_time}.\n\n"
+            f"Please let us know if this time slot works for your schedule, and if you have any dietary accommodations "
+            f"({event_dietary}) or special presentation requirements.\n\n"
+            f"Warm regards,\n{event_title} Organizing Committee"
+        )
+
+    elif clean_target in ("sponsor", "partner"):
+        if not sponsor and not target_rec_email:
+            raise ValueError(f"Sponsor '{target_id_or_name}' not found for event '{event_id}'")
+
+        if sponsor:
+            target_rec_name = target_rec_name or sponsor.get("name", "Sponsor")
+            target_rec_email = target_rec_email or sponsor.get("contact_email") or f"partnerships@{target_rec_name.lower().replace(' ', '')}.com"
+            tier = sponsor.get("tier", "Silver")
+            amount = float(sponsor.get("amount", 1500.0))
+        else:
+            target_rec_name = target_rec_name or target_id_or_name
+            tier = "Silver"
+            amount = 1500.0
+
+        facts_used.update({
+            "sponsor_name": target_rec_name,
+            "tier": tier,
+            "amount": amount
+        })
+
+        subject = f"Partnership Opportunity: {event_title} — {tier} Tier Sponsorship"
+        message_body = (
+            f"Dear {target_rec_name} Partnerships Team,\n\n"
+            f"We are writing to invite {target_rec_name} to partner with us for {event_title}, taking place on {event_date} "
+            f"at {event_location}.\n\n"
+            f"Our workshop brings together {event_attendees} top collegiate builders and researchers. We would love to offer you "
+            f"our {tier} Tier sponsorship package (${amount:,.0f}), which includes branded booth presence, keynote stage acknowledgment, "
+            f"and direct recruiting engagement with all participants.\n\n"
+            f"Please let us know if you would like to discuss this opportunity or if we can send over our sponsorship prospectus.\n\n"
+            f"Best regards,\n{event_title} Sponsorship Team"
+        )
+
+    elif clean_target in ("vendor", "catering", "caterer", "supplier"):
+        if not vendor and not target_rec_email:
+            raise ValueError(f"Vendor '{target_id_or_name}' not found for event '{event_id}'")
+
+        cater_dietary = event_dietary
+        service_window = "11:30 AM - 1:00 PM"
+        cater_loc = event_location
+        if req_row:
+            cater_dietary = req_row.get("dietary_needs") or cater_dietary
+            service_window = req_row.get("service_window") or service_window
+            cater_loc = req_row.get("location") or cater_loc
+
+        if vendor:
+            target_rec_name = target_rec_name or vendor.get("company_name", "Vendor")
+            target_rec_email = target_rec_email or vendor.get("contact_email") or f"orders@{target_rec_name.lower().replace(' ', '')}.com"
+            category = vendor.get("category", "Catering")
+            quote_amount = float(vendor.get("quote_amount", 0.0))
+            price_head = float(vendor.get("price_per_head", 0.0))
+        else:
+            target_rec_name = target_rec_name or target_id_or_name
+            category = "Catering"
+            quote_amount = 0.0
+            price_head = 0.0
+
+        facts_used.update({
+            "vendor_name": target_rec_name,
+            "category": category,
+            "quote_amount": quote_amount,
+            "price_per_head": price_head,
+            "dietary_needs": cater_dietary,
+            "service_window": service_window
+        })
+
+        subject = f"Order Inquiry & Dietary Specifications: {event_title} — {category}"
+        message_body = (
+            f"Hello {target_rec_name} Orders Team,\n\n"
+            f"We are coordinating operational logistics for {event_title} scheduled on {event_date} at {cater_loc}.\n\n"
+            f"We are reviewing your quote of ${quote_amount:,.2f} (${price_head:.2f}/head) for {event_attendees} attendees. "
+            f"Please confirm that you can accommodate our service drop-off window ({service_window}) and our required dietary "
+            f"accommodations: {cater_dietary}.\n\n"
+            f"Please reply with an updated itemized proposal and delivery access instructions.\n\n"
+            f"Thank you,\n{event_title} Operations Team"
+        )
+
+    if custom_instructions:
+        message_body += f"\n\nSpecial Note: {custom_instructions}"
+
+    init_status = "draft" if save_as_draft_only else "pending_approval"
+    init_delivery_status = "draft" if save_as_draft_only else "pending approval"
+
+    draft_result = tool_draft_outreach(
+        recipient_name=target_rec_name,
+        recipient_email=target_rec_email,
+        subject=subject,
+        message_body=message_body,
+        action_type=action_type,
+        event_id=event_id,
+        status=init_status,
+        delivery_status=init_delivery_status,
+        actor_id=actor_id
+    )
+
+    draft_result["target_type"] = clean_target
+    draft_result["target_id_or_name"] = target_id_or_name
+    draft_result["facts_used"] = facts_used
+    return draft_result
 
 
 def tool_draft_outreach(
@@ -22,7 +266,10 @@ def tool_draft_outreach(
     subject: str,
     message_body: str,
     action_type: str = "speaker_outreach",
-    event_id: str = "evt-dubhacks-2026"
+    event_id: str = "evt-dubhacks-2026",
+    status: str = "pending_approval",
+    delivery_status: str = "pending approval",
+    actor_id: str = "organizer"
 ) -> dict[str, Any]:
     """Draft an outreach message or proposal for human review. Does NOT send.
     Checks for existing pending drafts to prevent duplicate actions.
@@ -32,7 +279,7 @@ def tool_draft_outreach(
 
     # Duplicate check: Is there already a pending action for this recipient and action_type?
     c.execute(
-        "SELECT * FROM action_proposals WHERE event_id = ? AND action_type = ? AND status = 'pending_approval'",
+        "SELECT * FROM action_proposals WHERE event_id = ? AND action_type = ? AND status IN ('pending_approval', 'draft')",
         (event_id, action_type)
     )
     existing_rows = [dict(r) for r in c.fetchall()]
@@ -44,15 +291,39 @@ def tool_draft_outreach(
                 p["subject"] = subject
                 p["message_body"] = message_body
                 p["recipient_name"] = recipient_name
+                now = datetime.now().isoformat()
                 c.execute(
-                    "UPDATE action_proposals SET title = ?, summary = ?, payload = ? WHERE id = ?",
-                    (f"Outreach to {recipient_name} ({subject})", f"Proposed message to {recipient_email} regarding {subject}", json.dumps(p), row["id"])
+                    """
+                    UPDATE action_proposals
+                    SET title = ?, summary = ?, payload = ?, delivery_status = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        f"Outreach to {recipient_name} ({subject})",
+                        f"Proposed message to {recipient_email} regarding {subject}",
+                        json.dumps(p),
+                        delivery_status,
+                        now,
+                        row["id"]
+                    )
                 )
                 conn.commit()
                 conn.close()
+
+                log_audit_event(
+                    event_id=event_id,
+                    actor_id=actor_id,
+                    action="update_outreach_draft",
+                    target_type="action_proposal",
+                    target_id=row["id"],
+                    details={"action_id": row["id"], "recipient": recipient_email, "is_duplicate_prevented": True}
+                )
+
                 return {
                     "action_id": row["id"],
-                    "status": "pending_approval",
+                    "status": row["status"],
+                    "delivery_status": delivery_status,
+                    "approval_status": "pending",
                     "title": f"Outreach to {recipient_name} ({subject})",
                     "recipient": f"{recipient_name} <{recipient_email}>",
                     "subject": subject,
@@ -76,19 +347,38 @@ def tool_draft_outreach(
         "action_type": action_type
     }
 
+    appr_status = "draft" if status == "draft" else "pending"
+
     c.execute(
         """
-        INSERT INTO action_proposals (id, event_id, action_type, title, summary, payload, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO action_proposals (
+            id, event_id, action_type, title, summary, payload, status,
+            delivery_status, approval_status, delivery_mode
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (action_id, event_id, action_type, title, summary, json.dumps(payload), "pending_approval")
+        (
+            action_id, event_id, action_type, title, summary,
+            json.dumps(payload), status, delivery_status, appr_status, "simulated"
+        )
     )
     conn.commit()
     conn.close()
 
+    log_audit_event(
+        event_id=event_id,
+        actor_id=actor_id,
+        action="create_outreach_draft",
+        target_type="action_proposal",
+        target_id=action_id,
+        details={"action_id": action_id, "recipient": recipient_email, "action_type": action_type}
+    )
+
     return {
         "action_id": action_id,
-        "status": "pending_approval",
+        "status": status,
+        "delivery_status": delivery_status,
+        "approval_status": appr_status,
         "title": title,
         "recipient": f"{recipient_name} <{recipient_email}>",
         "subject": subject,
@@ -102,21 +392,28 @@ def tool_draft_outreach(
 def tool_update_draft(
     action_id: str,
     subject: str | None = None,
-    message_body: str | None = None
+    message_body: str | None = None,
+    recipient_email: str | None = None,
+    recipient_name: str | None = None,
+    event_id: str | None = None,
+    actor_id: str = "organizer"
 ) -> dict[str, Any]:
-    """Edit an existing outreach draft before organizer approval."""
+    """Edit an existing outreach draft before organizer approval with event boundary checks."""
     conn = get_connection()
     c = conn.cursor()
-    c.execute("SELECT * FROM action_proposals WHERE id = ?", (action_id,))
+    if event_id:
+        c.execute("SELECT * FROM action_proposals WHERE id = ? AND event_id = ?", (action_id, event_id))
+    else:
+        c.execute("SELECT * FROM action_proposals WHERE id = ?", (action_id,))
     row = c.fetchone()
     if not row:
         conn.close()
         return {"error": f"Action proposal {action_id} not found."}
 
     action = dict(row)
-    if action["status"] != "pending_approval":
+    if action["status"] not in ("pending_approval", "draft"):
         conn.close()
-        return {"error": f"Cannot edit action {action_id} in state '{action['status']}'."}
+        return {"error": f"Cannot edit action {action_id} in state '{action['status']}'. Only pending actions can be edited."}
 
     try:
         payload = json.loads(action["payload"])
@@ -125,22 +422,45 @@ def tool_update_draft(
 
     if subject:
         payload["subject"] = subject
-        action["title"] = f"Outreach to {payload.get('recipient_name', 'Contact')} ({subject})"
     if message_body:
         payload["message_body"] = message_body
         payload["message"] = message_body
+    if recipient_email:
+        payload["recipient_email"] = recipient_email
+    if recipient_name:
+        payload["recipient_name"] = recipient_name
 
+    rec_name = payload.get("recipient_name", "Contact")
+    sub = payload.get("subject", "Communication")
+    action_title = f"Outreach to {rec_name} ({sub})"
+    summary = f"Proposed message to {payload.get('recipient_email', '')} regarding {sub}"
+
+    now = datetime.now().isoformat()
     c.execute(
-        "UPDATE action_proposals SET title = ?, payload = ? WHERE id = ?",
-        (action["title"], json.dumps(payload), action_id)
+        """
+        UPDATE action_proposals
+        SET title = ?, summary = ?, payload = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (action_title, summary, json.dumps(payload), now, action_id)
     )
     conn.commit()
     conn.close()
 
+    log_audit_event(
+        event_id=action.get("event_id", "evt-dubhacks-2026"),
+        actor_id=actor_id,
+        action="edit_outreach_draft",
+        target_type="action_proposal",
+        target_id=action_id,
+        details={"action_id": action_id, "updated_fields": [k for k in ("subject", "message_body", "recipient_email", "recipient_name") if locals().get(k) is not None]}
+    )
+
     return {
         "action_id": action_id,
-        "status": "pending_approval",
-        "title": action["title"],
+        "status": action["status"],
+        "delivery_status": action.get("delivery_status", "pending approval"),
+        "title": action_title,
         "payload": payload,
         "updated": True
     }
@@ -237,48 +557,268 @@ def tool_draft_teams_message(recipient: str, message: str, event_id: str = "evt-
     }
 
 
-def dismiss_action(action_id: str) -> dict[str, Any]:
+def dismiss_action(
+    action_id: str,
+    event_id: str | None = None,
+    actor_id: str = "organizer"
+) -> dict[str, Any]:
     """Reject or dismiss an action proposal without sending."""
     conn = get_connection()
     c = conn.cursor()
-    c.execute("UPDATE action_proposals SET status = 'dismissed' WHERE id = ?", (action_id,))
-    conn.commit()
-    conn.close()
-    return {"action_id": action_id, "status": "dismissed"}
-
-
-def execute_approved_action(action_id: str) -> dict[str, Any]:
-    """Execute a previously approved action proposal via external provider or recorded delivery."""
-    conn = get_connection()
-    c = conn.cursor()
-    c.execute("SELECT * FROM action_proposals WHERE id = ?", (action_id,))
+    if event_id:
+        c.execute("SELECT * FROM action_proposals WHERE id = ? AND event_id = ?", (action_id, event_id))
+    else:
+        c.execute("SELECT * FROM action_proposals WHERE id = ?", (action_id,))
     row = c.fetchone()
-
     if not row:
         conn.close()
         return {"error": f"Action proposal {action_id} not found."}
 
     action = dict(row)
-    if action["status"] != "pending_approval":
+    if action["status"] == "executed":
         conn.close()
+        return {"error": f"Cannot dismiss action {action_id} in state 'executed'."}
+
+    now = datetime.now().isoformat()
+    c.execute(
+        """
+        UPDATE action_proposals
+        SET status = 'dismissed', approval_status = 'dismissed', delivery_status = 'dismissed', updated_at = ?
+        WHERE id = ?
+        """,
+        (now, action_id)
+    )
+    conn.commit()
+    conn.close()
+
+    log_audit_event(
+        event_id=action.get("event_id", "evt-dubhacks-2026"),
+        actor_id=actor_id,
+        action="dismiss_action_proposal",
+        target_type="action_proposal",
+        target_id=action_id,
+        details={"action_id": action_id, "previous_status": action["status"]}
+    )
+
+    return {
+        "action_id": action_id,
+        "status": "dismissed",
+        "approval_status": "dismissed",
+        "delivery_status": "dismissed"
+    }
+
+
+def tool_approve_outreach(
+    action_id: str,
+    event_id: str | None = None,
+    actor_id: str = "organizer",
+    dispatch_now: bool = True,
+    force_simulation: bool = True,
+    simulate_failure: bool = False,
+    simulate_unconfirmed: bool = False
+) -> dict[str, Any]:
+    """Approve an outreach draft. If dispatch_now is True, proceeds to execute/dispatch the approved action."""
+    conn = get_connection()
+    try:
+        c = conn.cursor()
+        if event_id:
+            c.execute("SELECT * FROM action_proposals WHERE id = ? AND event_id = ?", (action_id, event_id))
+        else:
+            c.execute("SELECT * FROM action_proposals WHERE id = ?", (action_id,))
+        row = c.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return {"error": f"Action proposal {action_id} not found."}
+
+    action = dict(row)
+    if action["status"] == "executed":
         return {
             "error": f"Action {action_id} is already in state '{action['status']}'. Only pending actions can be approved."
         }
+    if action["status"] == "dismissed":
+        return {
+            "error": f"Cannot approve dismissed action {action_id}."
+        }
+
+    now = datetime.now().isoformat()
+    record_action_approval(action_id, actor_id=actor_id, event_id=event_id)
+
+    if not dispatch_now:
+        return {
+            "action_id": action_id,
+            "status": "approved",
+            "approval_status": "approved",
+            "delivery_status": "approved",
+            "approved_by": actor_id,
+            "approved_at": now,
+            "title": action.get("title", ""),
+            "event_id": action.get("event_id", "")
+        }
+
+    return execute_approved_action(
+        action_id=action_id,
+        event_id=event_id,
+        actor_id=actor_id,
+        force_simulation=force_simulation,
+        simulate_failure=simulate_failure,
+        simulate_unconfirmed=simulate_unconfirmed
+    )
+
+
+def tool_dispatch_approved_action(
+    action_id: str,
+    event_id: str | None = None,
+    actor_id: str = "organizer",
+    force_simulation: bool = True,
+    simulate_failure: bool = False,
+    simulate_unconfirmed: bool = False
+) -> dict[str, Any]:
+    """Dispatch an explicitly approved action proposal. Rejects drafts or unapproved actions directly."""
+    return execute_approved_action(
+        action_id=action_id,
+        event_id=event_id,
+        actor_id=actor_id,
+        force_simulation=force_simulation,
+        simulate_failure=simulate_failure,
+        simulate_unconfirmed=simulate_unconfirmed,
+        require_approved=True
+    )
+
+
+def execute_approved_action(
+    action_id: str,
+    event_id: str | None = None,
+    actor_id: str = "organizer",
+    force_simulation: bool = True,
+    simulate_failure: bool = False,
+    simulate_unconfirmed: bool = False,
+    require_approved: bool = False
+) -> dict[str, Any]:
+    """Execute a previously approved action proposal via external provider or recorded delivery."""
+    conn = get_connection()
+    try:
+        c = conn.cursor()
+        if event_id:
+            c.execute("SELECT * FROM action_proposals WHERE id = ? AND event_id = ?", (action_id, event_id))
+        else:
+            c.execute("SELECT * FROM action_proposals WHERE id = ?", (action_id,))
+        row = c.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return {"error": f"Action proposal {action_id} not found."}
+
+    action = dict(row)
+    if action["status"] == "draft" or action.get("approval_status") == "draft":
+        return {
+            "error": f"Cannot dispatch unapproved draft action {action_id}. Action must be submitted and approved before dispatch."
+        }
+
+    if action["status"] == "executed":
+        return {
+            "error": f"Action {action_id} is already in state 'executed'. Only pending actions can be approved."
+        }
+
+    if action["status"] == "dismissed":
+        return {
+            "error": f"Cannot dispatch dismissed action {action_id}."
+        }
+
+    if require_approved and action["status"] != "approved" and action.get("approval_status") != "approved":
+        return {
+            "error": f"Cannot dispatch action {action_id} in state '{action['status']}'. Action must be explicitly approved before dispatch."
+        }
+
+    if action["status"] not in ("pending_approval", "approved"):
+        return {
+            "error": f"Action {action_id} is already in state '{action['status']}'. Only pending actions can be approved."
+        }
+
+    now = datetime.now().isoformat()
+    conn = get_connection()
+    try:
+        c = conn.cursor()
+        c.execute(
+            """
+            UPDATE action_proposals
+            SET status = 'executing', updated_at = ?
+            WHERE id = ? AND status IN ('pending_approval', 'approved')
+            """,
+            (now, action_id)
+        )
+        if c.rowcount == 0:
+            return {
+                "error": f"Action {action_id} is already in state '{action['status']}'. Only pending actions can be approved."
+            }
+        conn.commit()
+    finally:
+        conn.close()
 
     try:
         payload = json.loads(action["payload"])
     except Exception:
         payload = {}
 
+    approved_by = action.get("approved_by") or actor_id
+    approved_at = action.get("approved_at") or now
     execution_result = {}
+    delivery_status = "simulated delivery"
+    delivery_mode = "simulated"
+    is_real_sent = False
 
-    # If action is an email and Resend is available
-    if action["action_type"] in ("speaker_outreach", "sponsor_outreach", "vendor_quote_approval"):
-        recipient_email = payload.get("recipient_email")
-        subject = payload.get("subject")
-        body = payload.get("message_body")
+    is_email = action["action_type"] in (
+        "speaker_outreach", "sponsor_outreach", "vendor_quote_approval", "vendor_outreach"
+    )
 
-        if settings.resend_api_key and not settings.resend_api_key.startswith("re_dummy"):
+    if is_email:
+        recipient_email = payload.get("recipient_email", "")
+        recipient_name = payload.get("recipient_name", "")
+        subject = payload.get("subject", "")
+        body = payload.get("message_body", "")
+
+        is_test = bool(os.getenv("PYTEST_CURRENT_TEST")) or ("pytest" in sys.modules) or ("unittest" in sys.modules)
+        is_production = (os.getenv("GURT_ENV") == "production")
+        allow_real = (os.getenv("GURT_ALLOW_REAL_EMAIL", "").lower() in ("true", "1"))
+        has_real_resend_key = bool(settings.resend_api_key and not settings.resend_api_key.startswith("re_dummy"))
+
+        can_send_real = (
+            is_production and
+            allow_real and
+            not force_simulation and
+            not is_test and
+            has_real_resend_key
+        )
+
+        if simulate_failure:
+            delivery_status = "failed"
+            delivery_mode = "failed"
+            is_real_sent = False
+            execution_result = {
+                "provider": "Mock Dispatcher",
+                "status": "failed",
+                "delivery_status": "failed",
+                "delivery_mode": "failed",
+                "error": "Simulated external provider connection failure or HTTP 500.",
+                "is_real_sent": False,
+                "is_simulated": True
+            }
+        elif simulate_unconfirmed:
+            delivery_status = "delivery unconfirmed"
+            delivery_mode = "simulated"
+            is_real_sent = False
+            execution_result = {
+                "provider": "Mock Dispatcher",
+                "status": "delivery unconfirmed",
+                "delivery_status": "delivery unconfirmed",
+                "delivery_mode": "simulated",
+                "note": "Dispatch initiated but delivery confirmation from provider is unconfirmed.",
+                "is_real_sent": False,
+                "is_simulated": True
+            }
+        elif can_send_real:
             try:
                 with httpx.Client(timeout=10.0) as client:
                     res = client.post(
@@ -295,56 +835,154 @@ def execute_approved_action(action_id: str) -> dict[str, Any]:
                         }
                     )
                     if res.status_code in (200, 201):
+                        delivery_status = "real provider accepted"
+                        delivery_mode = "real"
+                        is_real_sent = True
                         execution_result = {
                             "provider": "Resend API",
-                            "status": "sent",
+                            "status": "real provider accepted",
+                            "delivery_status": "real provider accepted",
+                            "delivery_mode": "real",
+                            "is_real_sent": True,
+                            "is_simulated": False,
                             "resend_id": res.json().get("id")
                         }
-                    else:
-                        # Sandbox or unverified domain fallback
+                    elif res.status_code == 202:
+                        delivery_status = "delivery unconfirmed"
+                        delivery_mode = "real"
+                        is_real_sent = False
                         execution_result = {
-                            "provider": "Resend Sandbox Mock",
-                            "status": "recorded_delivery",
-                            "note": f"Resend response: {res.text}. Recorded as confirmed sent draft."
+                            "provider": "Resend API",
+                            "status": "delivery unconfirmed",
+                            "delivery_status": "delivery unconfirmed",
+                            "delivery_mode": "real",
+                            "note": f"Resend 202 accepted without final dispatch confirmation: {res.text}",
+                            "is_real_sent": False,
+                            "is_simulated": False
+                        }
+                    else:
+                        delivery_status = "failed"
+                        delivery_mode = "failed"
+                        is_real_sent = False
+                        execution_result = {
+                            "provider": "Resend API",
+                            "status": "failed",
+                            "delivery_status": "failed",
+                            "delivery_mode": "failed",
+                            "error": f"Resend HTTP {res.status_code}: {res.text}",
+                            "is_real_sent": False,
+                            "is_simulated": False
                         }
             except Exception as e:
+                delivery_status = "failed"
+                delivery_mode = "failed"
+                is_real_sent = False
                 execution_result = {
-                    "provider": "Mock Dispatcher",
-                    "status": "delivered_to_outbox",
-                    "error": str(e)
+                    "provider": "Resend API",
+                    "status": "failed",
+                    "delivery_status": "failed",
+                    "delivery_mode": "failed",
+                    "error": str(e),
+                    "is_real_sent": False,
+                    "is_simulated": False
                 }
         else:
+            delivery_status = "simulated delivery"
+            delivery_mode = "simulated"
+            is_real_sent = False
             execution_result = {
-                "provider": "Mock Dispatcher",
-                "status": "delivered_to_outbox",
-                "details": f"Message dispatched to {recipient_email} at {datetime.now().isoformat()}"
+                "provider": "Local Simulation Dispatcher",
+                "status": "simulated delivery",
+                "delivery_status": "simulated delivery",
+                "delivery_mode": "simulated",
+                "is_real_sent": False,
+                "is_simulated": True,
+                "recipient": recipient_email,
+                "subject": subject,
+                "details": f"Local simulation: message to {recipient_email} recorded safely without external network dispatch at {now}.",
+                "simulated_at": now
             }
     elif action["action_type"] == "slack_message":
+        delivery_status = "simulated delivery"
+        delivery_mode = "simulated"
+        is_real_sent = False
         execution_result = {
             "provider": "Slack Dispatcher",
-            "status": "recorded_delivery",
+            "status": "simulated delivery",
+            "delivery_status": "simulated delivery",
+            "delivery_mode": "simulated",
             "channel": payload.get("channel"),
-            "details": f"Slack broadcast dispatched to {payload.get('channel')} at {datetime.now().isoformat()}"
+            "details": f"Slack broadcast simulated to {payload.get('channel')} at {now}",
+            "is_real_sent": False,
+            "is_simulated": True
         }
     else:
+        delivery_status = "simulated delivery"
+        delivery_mode = "simulated"
+        is_real_sent = False
         execution_result = {
             "provider": "General Dispatcher",
-            "status": "recorded_delivery",
-            "details": f"Action dispatched at {datetime.now().isoformat()}"
+            "status": "simulated delivery",
+            "delivery_status": "simulated delivery",
+            "delivery_mode": "simulated",
+            "details": f"Action simulated at {now}",
+            "is_real_sent": False,
+            "is_simulated": True
         }
 
-    # Update database
-    now = datetime.now().isoformat()
-    c.execute(
-        "UPDATE action_proposals SET status = 'executed', executed_at = ?, execution_result = ? WHERE id = ?",
-        (now, json.dumps(execution_result), action_id)
+    final_status = "failed" if delivery_status == "failed" else "executed"
+
+    conn = get_connection()
+    try:
+        c = conn.cursor()
+        c.execute(
+            """
+            UPDATE action_proposals
+            SET status = ?, delivery_status = ?, delivery_mode = ?, approval_status = 'approved',
+                approved_at = ?, approved_by = ?, executed_at = ?, execution_result = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                final_status,
+                delivery_status,
+                delivery_mode,
+                approved_at,
+                approved_by,
+                now,
+                json.dumps(execution_result),
+                now,
+                action_id
+            )
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    log_audit_event(
+        event_id=action.get("event_id", "evt-dubhacks-2026"),
+        actor_id=actor_id,
+        action="execute_approved_action",
+        target_type="action_proposal",
+        target_id=action_id,
+        details={
+            "action_id": action_id,
+            "status": final_status,
+            "delivery_status": delivery_status,
+            "delivery_mode": delivery_mode,
+            "is_real_sent": is_real_sent,
+            "provider": execution_result.get("provider")
+        }
     )
-    conn.commit()
-    conn.close()
 
     return {
         "action_id": action_id,
-        "status": "executed",
+        "status": final_status,
+        "delivery_status": delivery_status,
+        "approval_status": "approved",
+        "approved_by": approved_by,
+        "approved_at": approved_at,
+        "delivery_mode": delivery_mode,
+        "is_real_sent": is_real_sent,
         "title": action["title"],
         "executed_at": now,
         "result": execution_result

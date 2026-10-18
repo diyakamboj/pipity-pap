@@ -16,7 +16,7 @@ from gurt.config import settings
 
 
 def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(settings.db_path))
+    conn = sqlite3.connect(str(settings.db_path), timeout=30.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -228,6 +228,12 @@ def init_db() -> None:
     _ensure_column(cursor, "sponsors", "event_id TEXT DEFAULT 'evt-dubhacks-2026'")
     _ensure_column(cursor, "tasks", "event_id TEXT DEFAULT 'evt-dubhacks-2026'")
     _ensure_column(cursor, "action_proposals", "event_id TEXT DEFAULT 'evt-dubhacks-2026'")
+    _ensure_column(cursor, "action_proposals", "delivery_status TEXT DEFAULT 'pending approval'")
+    _ensure_column(cursor, "action_proposals", "approval_status TEXT DEFAULT 'pending'")
+    _ensure_column(cursor, "action_proposals", "approved_at TEXT DEFAULT ''")
+    _ensure_column(cursor, "action_proposals", "approved_by TEXT DEFAULT ''")
+    _ensure_column(cursor, "action_proposals", "delivery_mode TEXT DEFAULT 'simulated'")
+    _ensure_column(cursor, "action_proposals", "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
     # Schedule extensions for precision logistics & conflict detection
     for tbl in ("schedules", "schedule"):
@@ -769,6 +775,143 @@ def record_vendor_selection(
             "Process formal purchase order or payment through institutional finance."
         ]
     }
+
+
+def get_action_proposal(action_id: str, event_id: str | None = None) -> dict[str, Any] | None:
+    """Retrieve an action proposal by ID with optional event isolation and parsed payload/result."""
+    conn = get_connection()
+    try:
+        c = conn.cursor()
+        if event_id:
+            c.execute("SELECT * FROM action_proposals WHERE id = ? AND event_id = ?", (action_id, event_id))
+        else:
+            c.execute("SELECT * FROM action_proposals WHERE id = ?", (action_id,))
+        row = c.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+    res = dict(row)
+    for json_col in ("payload", "execution_result"):
+        raw_val = res.get(json_col)
+        if raw_val and isinstance(raw_val, str):
+            try:
+                res[json_col] = json.loads(raw_val)
+            except Exception:
+                pass
+    return res
+
+
+def update_action_proposal(action_id: str, updates: dict[str, Any], event_id: str | None = None) -> dict[str, Any]:
+    """Update fields on an existing action proposal with event isolation."""
+    existing = get_action_proposal(action_id, event_id=event_id)
+    if not existing:
+        raise ValueError(f"Action proposal '{action_id}' not found" + (f" for event '{event_id}'" if event_id else ""))
+
+    allowed_fields = [
+        "title", "summary", "payload", "status", "delivery_status",
+        "approval_status", "approved_at", "approved_by", "delivery_mode",
+        "executed_at", "execution_result", "updated_at"
+    ]
+    set_clauses = []
+    values = []
+    for k, v in updates.items():
+        if k in allowed_fields:
+            if k in ("payload", "execution_result") and isinstance(v, (dict, list)):
+                v = json.dumps(v)
+            set_clauses.append(f"{k} = ?")
+            values.append(v)
+
+    if set_clauses:
+        conn = get_connection()
+        try:
+            c = conn.cursor()
+            values.append(action_id)
+            if event_id:
+                values.append(event_id)
+                c.execute(f"UPDATE action_proposals SET {', '.join(set_clauses)} WHERE id = ? AND event_id = ?", values)
+            else:
+                c.execute(f"UPDATE action_proposals SET {', '.join(set_clauses)} WHERE id = ?", values)
+            conn.commit()
+        finally:
+            conn.close()
+
+    updated = get_action_proposal(action_id, event_id=event_id)
+    return updated or {}
+
+
+def record_action_approval(
+    action_id: str,
+    actor_id: str = "organizer",
+    event_id: str | None = None
+) -> dict[str, Any]:
+    """Record organizer approval of an action proposal before execution."""
+    action = get_action_proposal(action_id, event_id=event_id)
+    if not action:
+        raise ValueError(f"Action proposal '{action_id}' not found" + (f" for event '{event_id}'" if event_id else ""))
+
+    now = datetime.now().isoformat()
+    updated = update_action_proposal(action_id, {
+        "status": "approved",
+        "approval_status": "approved",
+        "approved_at": now,
+        "approved_by": actor_id,
+        "delivery_status": "approved",
+        "updated_at": now
+    }, event_id=event_id)
+
+    log_audit_event(
+        event_id=action.get("event_id", "evt-dubhacks-2026"),
+        actor_id=actor_id,
+        action="approve_action_proposal",
+        target_type="action_proposal",
+        target_id=action_id,
+        details={
+            "action_id": action_id,
+            "action_type": action.get("action_type"),
+            "title": action.get("title"),
+            "approved_by": actor_id,
+            "approved_at": now
+        }
+    )
+    return updated
+
+
+def list_action_proposals(
+    event_id: str = "evt-dubhacks-2026",
+    status: str | None = None
+) -> list[dict[str, Any]]:
+    """List all action proposals for an event, optionally filtered by status, with parsed payloads."""
+    conn = get_connection()
+    try:
+        c = conn.cursor()
+        if status:
+            c.execute(
+                "SELECT * FROM action_proposals WHERE event_id = ? AND status = ? ORDER BY created_at DESC",
+                (event_id, status)
+            )
+        else:
+            c.execute(
+                "SELECT * FROM action_proposals WHERE event_id = ? ORDER BY created_at DESC",
+                (event_id,)
+            )
+        rows_raw = c.fetchall()
+    finally:
+        conn.close()
+
+    rows = []
+    for r in rows_raw:
+        d = dict(r)
+        for json_col in ("payload", "execution_result"):
+            raw_val = d.get(json_col)
+            if raw_val and isinstance(raw_val, str):
+                try:
+                    d[json_col] = json.loads(raw_val)
+                except Exception:
+                    pass
+        rows.append(d)
+    return rows
 
 
 def get_vendor_requirements(event_id: str = "evt-dubhacks-2026") -> list[dict[str, Any]]:
