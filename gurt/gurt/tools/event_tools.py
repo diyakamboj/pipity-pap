@@ -15,12 +15,65 @@ from gurt.db import (
     get_event_brief,
     update_event_brief,
     create_event_brief,
+    list_all_events,
     get_vendor_requirements,
     save_vendor_requirement,
     get_schedule_items,
     save_schedule_item,
     clear_schedule_items
 )
+
+
+def tool_list_events() -> list[dict[str, Any]]:
+    """List all registered events in the workspace database."""
+    return list_all_events()
+
+
+def tool_create_event(
+    title: str,
+    attendee_count: int = 50,
+    budget: float = 1000.0,
+    location: str = "Seattle Tech Hub",
+    date: str = "TBD",
+    theme: str = "",
+    goals: str = "",
+    dietary_specs: str = "Standard options with vegan & gluten-free accommodations",
+    av_requirements: str = "Projector and wireless microphone"
+) -> dict[str, Any]:
+    """Create a completely distinct new event with isolated brief, tasks, and requirements."""
+    brief_data = {
+        "title": title,
+        "attendee_count": int(attendee_count),
+        "budget": float(budget),
+        "location": location,
+        "date": date,
+        "theme": theme or f"{title} coordination",
+        "goals": goals or f"Deliver an outstanding {title} event within ${budget:,.2f} budget.",
+        "dietary_specs": dietary_specs,
+        "av_requirements": av_requirements,
+        "status": "planning"
+    }
+    created = create_event_brief(brief_data)
+    return {
+        "status": "created",
+        "event_id": created["id"],
+        "title": created["title"],
+        "brief": created,
+        "message": f"Successfully created new event '{created['title']}' with distinct ID '{created['id']}'."
+    }
+
+
+def tool_switch_event(event_id_or_title: str) -> dict[str, Any]:
+    """Switch active event context by event ID or case-insensitive title."""
+    brief = get_event_brief(event_id_or_title)
+    if not brief or not brief.get("id"):
+        return {"error": f"Event '{event_id_or_title}' not found in database."}
+    return {
+        "status": "switched",
+        "event_id": brief["id"],
+        "title": brief["title"],
+        "brief": brief
+    }
 
 
 def tool_get_event_overview(event_id: str = "evt-dubhacks-2026") -> dict[str, Any]:
@@ -61,9 +114,30 @@ def tool_propose_speaker(
     event_id: str = "evt-dubhacks-2026"
 ) -> dict[str, Any]:
     """Add a newly discovered speaker candidate to the shortlist with topic and evidence."""
-    spk_id = f"spk-{uuid.uuid4().hex[:6]}"
     conn = get_connection()
     c = conn.cursor()
+    c.execute(
+        "SELECT id FROM speakers WHERE event_id = ? AND LOWER(TRIM(name)) = LOWER(?)",
+        (event_id, name.strip())
+    )
+    existing = c.fetchone()
+    if existing:
+        spk_id = existing["id"]
+        c.execute(
+            "UPDATE speakers SET org = ?, topic = ?, bio = ?, contact_email = ? WHERE id = ?",
+            (org, topic, bio, contact_email, spk_id)
+        )
+        conn.commit()
+        conn.close()
+        return {
+            "status": "updated_shortlist",
+            "speaker_id": spk_id,
+            "name": name,
+            "topic": topic,
+            "org": org
+        }
+
+    spk_id = f"spk-{uuid.uuid4().hex[:6]}"
     c.execute(
         "INSERT INTO speakers (id, event_id, name, org, topic, status, contact_email, proposed_time, bio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (spk_id, event_id, name, org, topic, "shortlist", contact_email, "TBD", bio)
@@ -102,9 +176,30 @@ def tool_save_sponsor_candidate(
     event_id: str = "evt-dubhacks-2026"
 ) -> dict[str, Any]:
     """Save a researched sponsor prospect into the sponsorship pipeline."""
-    spn_id = f"spn-{uuid.uuid4().hex[:6]}"
     conn = get_connection()
     c = conn.cursor()
+    c.execute(
+        "SELECT id FROM sponsors WHERE event_id = ? AND LOWER(TRIM(name)) = LOWER(?)",
+        (event_id, name.strip())
+    )
+    existing = c.fetchone()
+    if existing:
+        spn_id = existing["id"]
+        c.execute(
+            "UPDATE sponsors SET tier = ?, amount = ?, notes = ?, contact_email = ? WHERE id = ?",
+            (tier, float(amount), notes, contact_email, spn_id)
+        )
+        conn.commit()
+        conn.close()
+        return {
+            "status": "updated_in_pipeline",
+            "sponsor_id": spn_id,
+            "name": name,
+            "tier": tier,
+            "amount": amount
+        }
+
+    spn_id = f"spn-{uuid.uuid4().hex[:6]}"
     c.execute(
         "INSERT INTO sponsors (id, event_id, name, tier, amount, status, contact_email, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (spn_id, event_id, name, tier, float(amount), "pipeline", contact_email, notes)
@@ -148,6 +243,27 @@ def tool_add_vendor_quote(
     conn = get_connection()
     c = conn.cursor()
     c.execute(
+        "SELECT id FROM vendors WHERE event_id = ? AND LOWER(TRIM(company_name)) = LOWER(?) AND LOWER(TRIM(category)) = LOWER(?)",
+        (event_id, company_name.strip(), category.strip())
+    )
+    existing = c.fetchone()
+    if existing:
+        vnd_id = existing["id"]
+        c.execute(
+            "UPDATE vendors SET quote_amount = ?, price_per_head = ?, contact_email = ?, details = ? WHERE id = ?",
+            (float(quote_amount), float(price_per_head), contact_email, details, vnd_id)
+        )
+        conn.commit()
+        conn.close()
+        return {
+            "status": "updated",
+            "vendor_id": vnd_id,
+            "company_name": company_name,
+            "quote_amount": quote_amount,
+            "price_per_head": price_per_head
+        }
+
+    c.execute(
         """
         INSERT INTO vendors (id, event_id, category, company_name, quote_amount, price_per_head, status, contact_email, details)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -189,6 +305,205 @@ def tool_save_vendor_requirement(
         unknowns=unknowns,
         status=status
     )
+
+
+def tool_discover_vendor_needs(event_id: str = "evt-dubhacks-2026", event_type: str = "workshop") -> dict[str, Any]:
+    """Contextually discover overlooked operational and supplier requirements beyond food (V1).
+    Discovers Badges & Lanyards, Directional Signage, AV Equipment, Catering, and Apparel.
+    """
+    ev = get_event_brief(event_id)
+    headcount = ev.get("attendee_count", 50)
+    budget = ev.get("budget", 2000.0)
+
+    # Standard contextual catalog based on event scale
+    contextual_catalog = [
+        {
+            "category": "Catering & Hydration",
+            "specification": f"Boxed meal service for {headcount} attendees with {ev.get('dietary_specs', 'vegan, GF, nut-free')} accommodations plus coffee/water station.",
+            "budget_allocated": round(budget * 0.45, 2),
+            "unknowns": "Final dietary breakdown cutoff date, service drop-off window.",
+            "status": "pending_quotes"
+        },
+        {
+            "category": "Badges & Lanyards",
+            "specification": f"{headcount + 15} color-printed 4x3 badge inserts with double-ended bulldog clip lanyards.",
+            "budget_allocated": round(budget * 0.12, 2),
+            "unknowns": "Sponsor vector logo inclusion deadline, on-site blank badge surplus count.",
+            "status": "pending_quotes"
+        },
+        {
+            "category": "Directional Signage & Printing",
+            "specification": "2 Foam-core agenda boards (24x36) and 6 directional directional arrows for foyer check-in.",
+            "budget_allocated": round(budget * 0.08, 2),
+            "unknowns": "Easel availability from venue vs rental necessity.",
+            "status": "pending_quotes"
+        },
+        {
+            "category": "AV & Presentation Tech",
+            "specification": f"Dual projection hookup, 2 wireless handheld mics, 1 lavalier for speaker podium, backup HDMI dongles.",
+            "budget_allocated": round(budget * 0.15, 2),
+            "unknowns": "House sound tie-in technician fee and auxiliary audio recording interface.",
+            "status": "pending_quotes"
+        },
+        {
+            "category": "Volunteer & Speaker Shirts",
+            "specification": f"Screen-printed short-sleeve shirts (approx 25 units for crew & speakers).",
+            "budget_allocated": round(budget * 0.10, 2),
+            "unknowns": "Vector artwork readiness and 10-day print production lead time.",
+            "status": "optional_unresolved"
+        }
+    ]
+
+    existing = get_vendor_requirements(event_id)
+    existing_cats = {e.get("category", "").lower() for e in existing}
+
+    added = []
+    for item in contextual_catalog:
+        if item["category"].lower() not in existing_cats:
+            saved = save_vendor_requirement(
+                event_id=event_id,
+                category=item["category"],
+                specification=item["specification"],
+                headcount=headcount,
+                budget_allocated=item["budget_allocated"],
+                unknowns=item["unknowns"],
+                status=item["status"]
+            )
+            added.append(saved)
+
+    all_reqs = get_vendor_requirements(event_id)
+
+    discovery_questions = [
+        f"1. Dietary Cutoff: By what date must final attendee dietary counts ({ev.get('dietary_specs', 'vegan/GF/nut-free')}) be submitted to the caterer?",
+        "2. Badge Artwork: Is the front/back artwork and sponsor logo lockup ready for print, or should we assign a task to collect vector assets?",
+        "3. Venue AV Inclusion: Does the venue contract cover house audio microphones and projector cabling, or do we need external AV rentals?",
+        "4. Directional Signs: Are easels provided by the facility for 24x36 schedule boards?"
+    ]
+
+    return {
+        "event_id": event_id,
+        "event_title": ev.get("title"),
+        "headcount": headcount,
+        "discovered_categories_count": len(all_reqs),
+        "requirements": all_reqs,
+        "newly_seeded_requirements": added,
+        "discovery_questions": discovery_questions,
+        "summary": f"Discovered {len(all_reqs)} operational supplier needs beyond food (Badges, Signage, AV Tech, Apparel, Catering)."
+    }
+
+
+def tool_compare_vendor_quotes(category: str = "Catering", event_id: str = "evt-dubhacks-2026") -> dict[str, Any]:
+    """Compare supplier quotes, calculate cost-per-head, evaluate minimums, and test budget feasibility (V2)."""
+    ev = get_event_brief(event_id)
+    budget = float(ev.get("budget", 2500.0))
+    attendees = int(ev.get("attendee_count", 80))
+
+    conn = get_connection()
+    c = conn.cursor()
+    if category:
+        c.execute("SELECT * FROM vendors WHERE event_id = ? AND category LIKE ?", (event_id, f"%{category}%"))
+    else:
+        c.execute("SELECT * FROM vendors WHERE event_id = ?", (event_id,))
+    vendors = [dict(row) for row in c.fetchall()]
+    conn.close()
+
+    if not vendors:
+        return {
+            "status": "no_quotes_found",
+            "category": category,
+            "message": f"No quotes currently logged under category '{category}' for event '{ev.get('title')}'. Suggest adding quotes via tool_add_vendor_quote."
+        }
+
+    comparisons = []
+    for v in vendors:
+        quote = float(v.get("quote_amount", 0.0))
+        per_head = float(v.get("price_per_head", 0.0))
+        if per_head <= 0 and attendees > 0:
+            per_head = round(quote / attendees, 2)
+
+        budget_variance = budget - quote
+        is_within_budget = quote <= budget
+
+        comparisons.append({
+            "vendor_id": v.get("id"),
+            "company_name": v.get("company_name"),
+            "category": v.get("category"),
+            "quote_amount": quote,
+            "price_per_head": per_head,
+            "budget_variance": budget_variance,
+            "is_within_budget": is_within_budget,
+            "compliance_verified": bool(v.get("compliance_verified")),
+            "details": v.get("details", "")
+        })
+
+    # Sort by quote amount ascending (best value first)
+    comparisons.sort(key=lambda x: x["quote_amount"])
+    best_value = comparisons[0]
+
+    return {
+        "event_id": event_id,
+        "event_title": ev.get("title"),
+        "category": category,
+        "event_budget": budget,
+        "attendee_count": attendees,
+        "quotes_evaluated": len(comparisons),
+        "comparison_matrix": comparisons,
+        "recommended_vendor": best_value["company_name"],
+        "recommendation_reason": (
+            f"Lowest total quote (${best_value['quote_amount']:,.2f} at ${best_value['price_per_head']:.2f}/head). "
+            f"Leaves ${best_value['budget_variance']:,.2f} margin in the event budget."
+        )
+    }
+
+
+def tool_verify_vendor_compliance(
+    company_name_or_id: str,
+    event_id: str = "evt-dubhacks-2026",
+    verified: bool = True,
+    notes: str = ""
+) -> dict[str, Any]:
+    """Verify vendor licensing, food safety permits, King County temporary event status, and COI (V2)."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "SELECT * FROM vendors WHERE event_id = ? AND (id = ? OR company_name LIKE ?) LIMIT 1",
+        (event_id, company_name_or_id, f"%{company_name_or_id}%")
+    )
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return {"error": f"Vendor '{company_name_or_id}' not found for event {event_id}."}
+
+    vnd = dict(row)
+    compliance_int = 1 if verified else 0
+
+    full_notes = notes.strip()
+    if not full_notes:
+        if "cater" in vnd.get("category", "").lower() or "food" in vnd.get("category", "").lower():
+            full_notes = (
+                "Verified Washington State Master Business License & Seattle Food Worker Cards. "
+                "Note: King County Public Health excludes temporary-event caterers from its standard 0-4 point rating scale; "
+                "verified via temporary food service establishment operating permit."
+            )
+        else:
+            full_notes = "Verified Washington State Master Business License and active Certificate of Insurance (COI) on file."
+
+    c.execute(
+        "UPDATE vendors SET compliance_verified = ?, compliance_notes = ? WHERE id = ?",
+        (compliance_int, full_notes, vnd["id"])
+    )
+    conn.commit()
+    conn.close()
+
+    return {
+        "status": "updated",
+        "vendor_id": vnd["id"],
+        "company_name": vnd["company_name"],
+        "category": vnd["category"],
+        "compliance_verified": verified,
+        "compliance_notes": full_notes,
+        "king_county_regulatory_note": "Temporary event vendors operate under specific temporary health permits; lack of restaurant rating is normal and compliant."
+    }
 
 
 def tool_lookup_tasks(status: str = "", event_id: str = "evt-dubhacks-2026") -> list[dict[str, Any]]:

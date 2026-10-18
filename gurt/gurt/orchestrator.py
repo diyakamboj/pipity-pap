@@ -18,16 +18,24 @@ from gurt.config import settings
 from gurt.skills.web_research import WEB_RESEARCH_GUIDELINES
 from gurt.skills.task_logger import TASK_LOGGER_GUIDELINES
 from gurt.skills.outreach_rules import OUTREACH_RULES
+from gurt.skills.vendor_intelligence import VENDOR_INTELLIGENCE_GUIDELINES
+from gurt.skills.outreach_management import OUTREACH_MANAGEMENT_GUIDELINES
 from gurt.tools.event_tools import (
     tool_get_event_overview,
     tool_get_event_brief,
     tool_update_event_brief,
+    tool_list_events,
+    tool_create_event,
+    tool_switch_event,
     tool_lookup_speakers,
     tool_propose_speaker,
     tool_lookup_vendors,
     tool_add_vendor_quote,
     tool_lookup_vendor_requirements,
     tool_save_vendor_requirement,
+    tool_discover_vendor_needs,
+    tool_compare_vendor_quotes,
+    tool_verify_vendor_compliance,
     tool_lookup_sponsors,
     tool_save_sponsor_candidate,
     tool_lookup_tasks,
@@ -37,11 +45,15 @@ from gurt.tools.event_tools import (
     tool_generate_schedule
 )
 from gurt.tools.research_tool import tool_web_research
+from gurt.db import get_memories, save_memory
 from gurt.tools.outreach_tools import (
     tool_draft_outreach,
     tool_draft_slack_message,
     tool_draft_teams_message,
-    tool_update_draft
+    tool_update_draft,
+    tool_process_outreach_reply,
+    tool_record_sponsor_commitment,
+    tool_check_outreach_followups
 )
 from gurt.tools.pdf_tools import (
     fill_event_pdf_form,
@@ -50,19 +62,29 @@ from gurt.tools.pdf_tools import (
 
 
 def get_system_instruction(event_id: str = "evt-dubhacks-2026") -> str:
-    """Build dynamic system prompt with live event brief context."""
+    """Build dynamic system prompt with live event brief context and persistent memories."""
     try:
         ev = tool_get_event_brief(event_id)
     except Exception:
         ev = {}
 
-    title = ev.get("title", "DubHacks 2026 Agentic AI Workshop")
-    date = ev.get("date", "Nov 15, 2026")
-    location = ev.get("location", "UW HUB Ballroom & Room 214")
-    count = ev.get("attendee_count", 80)
-    budget = ev.get("budget", 2500.0)
-    dietary = ev.get("dietary_specs", "Nut-free facility required; vegan and GF meal boxes.")
-    av = ev.get("av_requirements", "Dual projectors, 2 wireless handheld mics, 1 lapel mic.")
+    title = ev.get("title") or "Event"
+    date = ev.get("date") or "TBD"
+    location = ev.get("location") or "TBD"
+    count = ev.get("attendee_count") or 50
+    budget = float(ev.get("budget") or 1000.0)
+    dietary = ev.get("dietary_specs") or "Standard accommodations"
+    av = ev.get("av_requirements") or "Standard AV"
+
+    try:
+        mems = get_memories(event_id)
+        if mems:
+            mem_lines = "\n".join([f"- {m['key']} ({m['category']}): {m['value']}" for m in mems])
+            memory_section = f"\nORGANIZER MEMORY & PERSISTENT CONSTRAINTS:\n{mem_lines}\n"
+        else:
+            memory_section = ""
+    except Exception:
+        memory_section = ""
 
     return f"""You are Gurt, an autonomous Event Operations Agent built for small organizing teams.
 You help teams plan and execute events (hackathons, workshops, conferences) across four primary operational areas:
@@ -94,11 +116,20 @@ CURRENT EVENT CONTEXT:
 - Headcount: {count} attendees | Budget: ${budget:,.2f}
 - Dietary Constraints: {dietary}
 - AV Requirements: {av}
-
+{memory_section}
 Guidelines:
+CRITICAL EVENT CREATION & SETUP:
+- When the user expresses intent to plan a new event (e.g. "I want to plan a new event"), invite them to share the event title, date, location, headcount, and budget.
+- When the user provides the event name and details (e.g. "It a Loveable Community Workshop. I'm expecting 30 people... budget $400"), you MUST call `create_event(title="Loveable Community Workshop", attendee_count=30, budget=400.0, ...)` with those details.
+- NEVER call `update_event_brief`, `list_events`, or `lookup_sponsors` when the user is giving you details to create a new event.
+- NEVER assume or inject sponsors from other events into a new event.
+- When switching between existing events, call `switch_event(event_id_or_title=...)`.
+
 {WEB_RESEARCH_GUIDELINES}
 {TASK_LOGGER_GUIDELINES}
 {OUTREACH_RULES}
+{VENDOR_INTELLIGENCE_GUIDELINES}
+{OUTREACH_MANAGEMENT_GUIDELINES}
 """
 
 
@@ -306,6 +337,117 @@ GEMINI_TOOLS = [
                 "name": "fill_event_pdf_form",
                 "description": "Fill the venue/vendor AcroForm contract template with saved event facts and produce a downloadable draft PDF.",
                 "parameters": {"type": "object", "properties": {}}
+            },
+            {
+                "name": "save_event_memory",
+                "description": "Store an organizer preference, rule, constraint, or fact in persistent long-term memory across chats.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "key": {"type": "string", "description": "Short key identifier (e.g. catering_cutoff_time)"},
+                        "value": {"type": "string", "description": "The exact rule or preference to remember"},
+                        "category": {"type": "string", "description": "Category (preference, dietary_rule, budget_rule, contact)"}
+                    },
+                    "required": ["key", "value"]
+                }
+            },
+            {
+                "name": "list_events",
+                "description": "List all registered events in the workspace database with task/speaker/vendor counts.",
+                "parameters": {"type": "object", "properties": {}}
+            },
+            {
+                "name": "create_event",
+                "description": "Create a completely new event with its own brief, tasks, and requirements. Use this instead of update_event_brief when the user wants a NEW event.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "Event title"},
+                        "attendee_count": {"type": "integer", "description": "Expected number of attendees"},
+                        "budget": {"type": "number", "description": "Total event budget in USD"},
+                        "location": {"type": "string", "description": "Event venue or location"},
+                        "date": {"type": "string", "description": "Event date/time"},
+                        "theme": {"type": "string"},
+                        "goals": {"type": "string"},
+                        "dietary_specs": {"type": "string"},
+                        "av_requirements": {"type": "string"}
+                    },
+                    "required": ["title"]
+                }
+            },
+            {
+                "name": "switch_event",
+                "description": "Switch the active event context by event ID or title.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"event_id_or_title": {"type": "string", "description": "Event ID (e.g. evt-dubhacks-2026) or title keyword"}},
+                    "required": ["event_id_or_title"]
+                }
+            },
+            {
+                "name": "discover_vendor_needs",
+                "description": "Contextually discover overlooked operational and supplier requirements beyond food (badges, signage, AV, shirts). Seeds vendor requirements and asks clarifying questions.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"event_type": {"type": "string", "description": "Type of event: workshop, hackathon, conference, meetup"}}
+                }
+            },
+            {
+                "name": "compare_vendor_quotes",
+                "description": "Compare supplier quotes in a category, calculate cost-per-head, and evaluate budget feasibility.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"category": {"type": "string", "description": "Vendor category to compare: Catering, Badges, AV, etc."}},
+                    "required": ["category"]
+                }
+            },
+            {
+                "name": "verify_vendor_compliance",
+                "description": "Verify vendor licensing, food safety permits, and Certificate of Insurance status.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "company_name_or_id": {"type": "string", "description": "Vendor company name or vendor ID"},
+                        "verified": {"type": "boolean", "description": "Whether compliance is verified"},
+                        "notes": {"type": "string", "description": "Optional compliance notes"}
+                    },
+                    "required": ["company_name_or_id"]
+                }
+            },
+            {
+                "name": "process_outreach_reply",
+                "description": "Parse a pasted speaker or sponsor reply to extract availability, topic confirmation, dietary needs, sponsor commitment, and conditions. Updates persistent records.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "contact_name": {"type": "string", "description": "Name of the person who replied"},
+                        "reply_text": {"type": "string", "description": "The full text of their reply"}
+                    },
+                    "required": ["contact_name", "reply_text"]
+                }
+            },
+            {
+                "name": "record_sponsor_commitment",
+                "description": "Record a confirmed sponsor pledge with tier, amount, and agreed benefits.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "sponsor_name": {"type": "string"},
+                        "tier": {"type": "string", "description": "Gold, Silver, or Bronze"},
+                        "amount": {"type": "number", "description": "Committed sponsorship amount in USD"},
+                        "benefits_agreed": {"type": "string", "description": "Agreed sponsor benefits (logo placement, booth, etc.)"},
+                        "notes": {"type": "string"}
+                    },
+                    "required": ["sponsor_name", "tier", "amount"]
+                }
+            },
+            {
+                "name": "check_outreach_followups",
+                "description": "Identify stalled outreach candidates (speakers in shortlist/contacted, sponsors in pipeline/discussion) and pending action proposals that need follow-up.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"days_threshold": {"type": "integer", "description": "How many days without response to consider stalled (default 3)"}}
+                }
             }
         ]
     }
@@ -403,14 +545,390 @@ def dispatch_tool(name: str, args: dict[str, Any], event_id: str = "evt-dubhacks
         return tool_web_research(args.get("query", ""))
     elif name == "fill_event_pdf_form":
         return fill_event_pdf_form(event_id)
+    elif name == "inspect_template_fields":
+        return inspect_template_fields()
+    elif name == "save_event_memory":
+        return save_memory(
+            event_id=event_id,
+            key=args.get("key", "preference"),
+            value=args.get("value", ""),
+            category=args.get("category", "preference")
+        )
+    elif name == "list_events":
+        return {"events": tool_list_events()}
+    elif name == "create_event":
+        return tool_create_event(
+            title=args.get("title", "New Event"),
+            attendee_count=int(args.get("attendee_count", 50)),
+            budget=float(args.get("budget", 1000.0)),
+            location=args.get("location", "Seattle Tech Hub"),
+            date=args.get("date", "TBD"),
+            theme=args.get("theme", ""),
+            goals=args.get("goals", ""),
+            dietary_specs=args.get("dietary_specs", ""),
+            av_requirements=args.get("av_requirements", "")
+        )
+    elif name == "switch_event":
+        result = tool_switch_event(args.get("event_id_or_title", ""))
+        return result
+    elif name == "discover_vendor_needs":
+        return tool_discover_vendor_needs(
+            event_id=event_id,
+            event_type=args.get("event_type", "workshop")
+        )
+    elif name == "compare_vendor_quotes":
+        return tool_compare_vendor_quotes(
+            category=args.get("category", "Catering"),
+            event_id=event_id
+        )
+    elif name == "verify_vendor_compliance":
+        return tool_verify_vendor_compliance(
+            company_name_or_id=args.get("company_name_or_id", ""),
+            event_id=event_id,
+            verified=args.get("verified", True),
+            notes=args.get("notes", "")
+        )
+    elif name == "process_outreach_reply":
+        return tool_process_outreach_reply(
+            contact_name=args.get("contact_name", ""),
+            reply_text=args.get("reply_text", ""),
+            event_id=event_id
+        )
+    elif name == "record_sponsor_commitment":
+        return tool_record_sponsor_commitment(
+            sponsor_name=args.get("sponsor_name", ""),
+            tier=args.get("tier", "Silver"),
+            amount=float(args.get("amount", 1500.0)),
+            benefits_agreed=args.get("benefits_agreed", ""),
+            notes=args.get("notes", ""),
+            event_id=event_id
+        )
+    elif name == "check_outreach_followups":
+        return tool_check_outreach_followups(
+            event_id=event_id,
+            days_threshold=int(args.get("days_threshold", 3))
+        )
     return {"error": f"Unknown tool: {name}"}
 
 
-def dynamic_semantic_executor(user_message: str, event_id: str = "evt-dubhacks-2026") -> dict[str, Any]:
+def format_tool_execution_response(executed_tools: list[dict[str, Any]], event_id: str = "evt-dubhacks-2026") -> str:
+    """Format executed tool calls into natural, user-friendly markdown rather than raw JSON."""
+    tool_names = [et.get("tool") for et in executed_tools]
+
+    if "create_event" in tool_names:
+        for et in executed_tools:
+            if et.get("tool") == "create_event":
+                out = et.get("output", {})
+                return (
+                    f"🎉 **New Event Initialized!**\n\n"
+                    f"- **Title:** {out.get('title', 'New Event')}\n"
+                    f"- **Event ID:** `{out.get('event_id', '')}`\n"
+                    f"- **Attendees:** {out.get('attendee_count', '?')} | **Budget:** ${out.get('budget', 0):,.2f} | **Location:** {out.get('location', 'TBD')}\n\n"
+                    f"Active workspace switched to **{out.get('title')}**. We can now build tasks, shortlist speakers, compare vendors, or seek sponsorships!"
+                )
+
+    if "lookup_sponsors" in tool_names:
+        sponsors = []
+        for et in executed_tools:
+            if et.get("tool") == "lookup_sponsors":
+                out = et.get("output", {})
+                if isinstance(out, dict):
+                    sponsors = out.get("sponsors", [])
+                elif isinstance(out, list):
+                    sponsors = out
+        if not sponsors:
+            ev = tool_get_event_brief(event_id) or {}
+            return f"There are currently no sponsors recorded or in discussion yet for **{ev.get('title', 'this event')}**. Would you like me to research and add prospective sponsors?"
+        lines = [f"- **{s['name']}** ({s['tier']} Tier): **${s['amount']:,.2f}** — Status: `{s['status']}`" for s in sponsors]
+        return "Here is the current sponsorship pipeline for this event:\n\n" + "\n".join(lines)
+
+    if "lookup_speakers" in tool_names:
+        speakers = []
+        for et in executed_tools:
+            if et.get("tool") == "lookup_speakers":
+                out = et.get("output", {})
+                speakers = out.get("speakers", []) if isinstance(out, dict) else out
+        if not speakers:
+            return "There are no speakers shortlisted yet for this event. Would you like me to research potential keynote speakers or workshop leaders?"
+        lines = [f"- **{s['name']}** ({s['org']}): *{s['topic']}* — `{s['status']}`" for s in speakers]
+        return "Here is our current speaker shortlist:\n\n" + "\n".join(lines)
+
+    if "get_event_overview" in tool_names:
+        ov = tool_get_event_overview(event_id)
+        ev = ov.get("event", {})
+        return (
+            f"Here is the status for **{ev.get('title', 'our event')}**:\n\n"
+            f"- **Date & Venue:** {ev.get('date')} at {ev.get('location')}\n"
+            f"- **Scale:** {ev.get('attendee_count')} attendees | Budget: ${ev.get('budget', 0):,.2f}\n"
+            f"- **Progress:** {ov.get('speakers')} | {ov.get('tasks')}"
+        )
+
+    lines = [f"- **{et['tool']}**: `{json.dumps(et['output'])[:120]}...`" for et in executed_tools]
+    return "I executed the requested operations:\n\n" + "\n".join(lines)
+
+
+def dynamic_semantic_executor(
+    user_message: str,
+    conversation_history: list[dict[str, str]] | None = None,
+    event_id: str = "evt-dubhacks-2026"
+) -> dict[str, Any]:
     """Resilient dynamic intent router when external LLM API is rate-limited or experiencing 503 spikes."""
     msg = user_message.strip()
     msg_lower = msg.lower()
     executed_tools = []
+    history = conversation_history or []
+
+    # Memory: Save or query organizer preferences
+    if any(k in msg_lower for k in ["remember that", "remember:", "note that", "save memory", "keep in mind"]):
+        fact = re.sub(r'^(remember that|remember:|note that|save memory|keep in mind)\s*[:\-]?\s*', '', msg, flags=re.IGNORECASE).strip()
+        key = re.sub(r'[^a-z0-9_]+', '_', fact[:24].lower()).strip('_') or "preference"
+        saved = save_memory(event_id=event_id, key=key, value=fact, category="user_preference")
+        executed_tools.append({"tool": "save_event_memory", "output": saved})
+        return {
+            "text": f"🧠 **Got it, I've committed that to memory!**\n\n- **Key:** `{saved['key']}`\n- **Rule / Fact:** {saved['value']}\n\nI will remember this across all chats and operations.",
+            "tool_calls": executed_tools,
+            "model_used": "gurt-semantic-engine"
+        }
+
+    if any(k in msg_lower for k in ["what do you remember", "show memory", "list memories", "my preferences"]):
+        mems = get_memories(event_id=event_id)
+        if not mems:
+            return {"text": "I don't have any custom organizer memories stored yet. You can tell me *'Remember that lunch cutoff is 11:30 AM'*, and I will keep it in mind!", "tool_calls": [], "model_used": "gurt-semantic-engine"}
+        lines = [f"- **{m['key']}** ({m['category']}): {m['value']}" for m in mems]
+        return {
+            "text": "🧠 **Here is what I have saved in persistent memory for this event:**\n\n" + "\n".join(lines),
+            "tool_calls": [],
+            "model_used": "gurt-semantic-engine"
+        }
+
+    # Detect if assistant previously asked to set up a new event
+    last_assistant_msg = ""
+    for h in reversed(history):
+        if h.get("role") in ("assistant", "model"):
+            last_assistant_msg = h.get("content", "").lower()
+            break
+    is_answering_event_setup = any(k in last_assistant_msg for k in ["new event set up", "event title", "headcount", "workspace", "initialize the new event"])
+
+    # 0a. Event Creation (Explicit command, or answering follow-up, or natural event description)
+    has_event_command = any(k in msg_lower for k in ["create event", "new event", "create a new event", "make a new event", "add event", "start a new event", "plan a new event"])
+    has_event_details = any(w in msg_lower for w in ["workshop", "hackathon", "conference", "meetup", "summit", "gathering"]) and any(w in msg_lower for w in ["people", "attendee", "headcount", "budget", "rsvp"])
+
+    if has_event_command or is_answering_event_setup or has_event_details:
+        # If user is only stating they want to plan an event without details
+        if (msg_lower in ["i want to plan a new event", "plan a new event", "new event", "create an event", "create a new event"] 
+            or (has_event_command and not any(w in msg_lower for w in ["people", "attendee", "budget", "$", "workshop", "hackathon", "summit"]))):
+            return {
+                "text": (
+                    "I'm ready! To get the new event set up in the system, just let me know:\n\n"
+                    "1. **Event Title** (e.g., *'Loveable Community Workshop'*)\n"
+                    "2. **Date & Location**\n"
+                    "3. **Expected Headcount**\n"
+                    "4. **Total Budget**\n\n"
+                    "Once you give me the details, I'll initialize the new event workspace so we can start tracking tasks, speakers, and vendors without overwriting your other projects."
+                ),
+                "tool_calls": [],
+                "model_used": "gurt-semantic-engine"
+            }
+
+        clean_text = re.sub(r'^(?:create event|new event|create a new event|make a new event|add event|start a new event|plan a new event)\s*[:—-]?\s*', '', msg, flags=re.IGNORECASE).strip()
+        
+        # Extract title
+        title = None
+        # Pattern like "It a Loveable Community Workshop" or "It's a Loveable Community Workshop"
+        m_it = re.search(r'(?:it(?:\'s|\s+is|\s+a)?)\s+([A-Za-z0-9\s]+?(?:workshop|hackathon|conference|meetup|summit|event))\b', clean_text, flags=re.IGNORECASE)
+        if m_it:
+            title = m_it.group(1).strip()
+        
+        if not title:
+            m_name = re.search(r'(?:called|named)\s+["\']?([^"\',]+)["\']?', clean_text, flags=re.IGNORECASE)
+            if m_name:
+                title = m_name.group(1).strip()
+
+        if not title:
+            # Fallback before conjunctions
+            chunk = re.split(r'\s+(?:with|for|at|budget|expecting|i\'m expecting|we need)\b', clean_text, flags=re.IGNORECASE)[0].strip()
+            chunk = re.sub(r'^(?:it(?:\'s|\s+is|\s+a)?)\s*', '', chunk, flags=re.IGNORECASE).strip()
+            if len(chunk) > 2 and len(chunk) < 60:
+                title = chunk
+
+        if not title or len(title) < 2:
+            title = "New Event Workshop"
+
+        m_count = re.search(r'(\d+)\s*(?:attendees?|pax|people|guests?)', clean_text, flags=re.IGNORECASE)
+        attendee_count = int(m_count.group(1)) if m_count else 30
+
+        m_budget = re.search(r'(?:budget\s*(?:right now is|is|of|around)?\s*)?\$(\d[\d,]*)|(?:budget\s*(?:right now is|is|of|around)?\s*)(\d[\d,]*)', clean_text, flags=re.IGNORECASE)
+        if m_budget:
+            budget_str = m_budget.group(1) or m_budget.group(2)
+            budget = float(budget_str.replace(',', ''))
+        else:
+            budget = 400.0
+
+        m_loc = re.search(r'(?:at|in)\s+([A-Z][\w\s]+?)(?:\s+(?:with|for|budget|expecting)|\.|$)', clean_text)
+        location = m_loc.group(1).strip() if m_loc else "TBD Location"
+
+        result = tool_create_event(title=title, attendee_count=attendee_count, budget=budget, location=location)
+        executed_tools.append({"tool": "create_event", "output": result})
+        return {
+            "text": (
+                f"🎉 **New Event Created!**\n\n"
+                f"- **Title:** {result['title']}\n"
+                f"- **Event ID:** `{result['event_id']}`\n"
+                f"- **Attendees:** {attendee_count} | **Budget:** ${budget:,.2f} | **Location:** {location}\n"
+                f"- **Status:** Planning\n\n"
+                f"This is a completely distinct event with its own tasks, vendors, and requirements. "
+                f"Active event switched to `{result['title']}`."
+            ),
+            "tool_calls": executed_tools,
+            "model_used": "gurt-semantic-engine",
+            "switched_event_id": result["event_id"]
+        }
+
+    # 0b. List Events
+    if any(k in msg_lower for k in ["list events", "show events", "all events", "my events", "which events"]):
+        events = tool_list_events()
+        executed_tools.append({"tool": "list_events", "output": events})
+        lines = [f"- **{e['title']}** (`{e['id']}`) — {e.get('attendee_count', '?')} attendees, ${e.get('budget', 0):,.0f} budget, {e.get('tasks_count', 0)} tasks" for e in events]
+        return {
+            "text": f"📋 **Registered Events ({len(events)}):**\n\n" + "\n".join(lines),
+            "tool_calls": executed_tools,
+            "model_used": "gurt-semantic-engine"
+        }
+
+    # 0c. Switch Event
+    if any(k in msg_lower for k in ["switch to", "switch event", "change event", "work on event"]):
+        target = re.sub(r'^(switch to|switch event|change event|work on event)\s*[:—-]?\s*', '', msg, flags=re.IGNORECASE).strip()
+        result = tool_switch_event(target)
+        executed_tools.append({"tool": "switch_event", "output": result})
+        if result.get("error"):
+            return {"text": f"❌ {result['error']}", "tool_calls": executed_tools, "model_used": "gurt-semantic-engine"}
+        return {
+            "text": (
+                f"🔄 **Switched active event to:** {result['title']} (`{result['event_id']}`)\n\n"
+                f"All operations will now target this event."
+            ),
+            "tool_calls": executed_tools,
+            "model_used": "gurt-semantic-engine",
+            "switched_event_id": result["event_id"]
+        }
+
+    # 0d. Discover Vendor Needs (V1)
+    if any(k in msg_lower for k in ["discover vendor", "vendor needs", "what vendors", "overlooked needs", "what do we need", "vendor checklist"]):
+        result = tool_discover_vendor_needs(event_id=event_id)
+        executed_tools.append({"tool": "discover_vendor_needs", "output": result})
+        req_lines = [f"- **{r.get('category', 'TBD')}**: {r.get('specification', '')[:80]}... — `{r.get('status')}`" for r in result.get("requirements", [])[:6]]
+        q_lines = "\n".join(result.get("discovery_questions", []))
+        return {
+            "text": (
+                f"🔍 **Vendor & Supplier Needs Discovery for {result.get('event_title', 'this event')}** ({result.get('headcount', '?')} attendees)\n\n"
+                f"**Requirements ({result.get('discovered_categories_count', 0)} categories):**\n"
+                + "\n".join(req_lines) +
+                f"\n\n**Questions I Need Answered:**\n{q_lines}\n\n"
+                f"*{result.get('summary', '')}*"
+            ),
+            "tool_calls": executed_tools,
+            "model_used": "gurt-semantic-engine"
+        }
+
+    # 0e. Compare Vendor Quotes (V2)
+    if ("compare" in msg_lower and any(w in msg_lower for w in ["quote", "quotes", "vendor", "vendors", "catering", "cost", "price"])) or any(k in msg_lower for k in ["compare quote", "compare quotes", "compare vendor", "compare vendors", "vendor comparison", "quote comparison", "best vendor", "cheapest", "trade-off", "tradeoff"]):
+        category = "Catering"
+        for cat in ["catering", "badge", "av", "signage", "shirt", "printing"]:
+            if cat in msg_lower:
+                category = cat.capitalize()
+                break
+        result = tool_compare_vendor_quotes(category=category, event_id=event_id)
+        executed_tools.append({"tool": "compare_vendor_quotes", "output": result})
+        if result.get("status") == "no_quotes_found":
+            return {"text": f"No vendor quotes found for **{category}**. Add quotes first with *'Add a vendor quote for...'*", "tool_calls": executed_tools, "model_used": "gurt-semantic-engine"}
+        comp_lines = [f"- **{c['company_name']}**: ${c['quote_amount']:,.2f} (${c['price_per_head']:.2f}/head) {'✅ Within budget' if c['is_within_budget'] else '❌ Over budget'}" for c in result.get("comparison_matrix", [])]
+        return {
+            "text": (
+                f"📊 **Vendor Quote Comparison: {category}**\n"
+                f"Budget: ${result.get('event_budget', 0):,.2f} | Attendees: {result.get('attendee_count', '?')}\n\n"
+                + "\n".join(comp_lines) +
+                f"\n\n🏆 **Recommended:** {result.get('recommended_vendor', 'N/A')} — {result.get('recommendation_reason', '')}"
+            ),
+            "tool_calls": executed_tools,
+            "model_used": "gurt-semantic-engine"
+        }
+
+    # 0f. Verify Vendor Compliance (V2)
+    if any(k in msg_lower for k in ["verify vendor", "compliance", "license check", "vendor compliance", "food safety"]):
+        # Extract vendor name from message
+        vname = re.sub(
+            r'^(?:verify\s+vendor\s+compliance|verify\s+compliance|verify\s+vendor|vendor\s+compliance|compliance|license check|food safety)\s*(?:for|of|:|-)?\s*',
+            '',
+            msg,
+            flags=re.IGNORECASE
+        ).strip()
+        vname = re.sub(r'\s+compliance$', '', vname, flags=re.IGNORECASE).strip()
+        if not vname or len(vname) < 2:
+            vname = "Ballard Bites"
+        result = tool_verify_vendor_compliance(company_name_or_id=vname, event_id=event_id)
+        executed_tools.append({"tool": "verify_vendor_compliance", "output": result})
+        if result.get("error"):
+            return {
+                "text": f"❌ Vendor Compliance Error: {result['error']}",
+                "tool_calls": executed_tools,
+                "model_used": "gurt-semantic-engine"
+            }
+        return {
+            "text": (
+                f"🛡️ **Vendor Compliance Updated**\n\n"
+                f"- **Vendor:** {result.get('company_name')} (`{result.get('vendor_id')}`)\n"
+                f"- **Category:** {result.get('category')}\n"
+                f"- **Verified:** {'✅ Yes' if result.get('compliance_verified') else '❌ No'}\n"
+                f"- **Notes:** {result.get('compliance_notes', '')}\n\n"
+                f"ℹ️ {result.get('king_county_regulatory_note', '')}"
+            ),
+            "tool_calls": executed_tools,
+            "model_used": "gurt-semantic-engine"
+        }
+
+    # 0g. Process Outreach Reply (O2)
+    if any(k in msg_lower for k in ["reply from", "response from", "got a reply", "process reply", "they replied"]):
+        # Try to extract contact name
+        name_match = re.search(r'(?:reply|response)\s+from\s+([A-Z][\w\s\.]+?)(?:\s*[:—,]|\s+saying|\s+that|\s+who)', msg, flags=re.IGNORECASE)
+        contact = name_match.group(1).strip() if name_match else "Unknown Contact"
+        # The rest is the reply text
+        reply = re.sub(r'^.*?(?:[:—]\s*|saying\s+)', '', msg, flags=re.IGNORECASE).strip() or msg
+        result = tool_process_outreach_reply(contact_name=contact, reply_text=reply, event_id=event_id)
+        executed_tools.append({"tool": "process_outreach_reply", "output": result})
+        ext = result.get("extracted", {})
+        return {
+            "text": (
+                f"📨 **Outreach Reply Processed — {result.get('contact_name')}**\n\n"
+                f"- **Interest:** {ext.get('interest_level', 'unknown')}\n"
+                f"- **Topic Confirmed:** {'✅' if ext.get('topic_confirmed') else '❌'}\n"
+                f"- **Dietary Needs:** {', '.join(ext.get('dietary_needs', [])) or 'None specified'}\n"
+                f"- **Conditions Flagged:** {len(ext.get('conditions', []))}\n"
+                + (f"- **Record Updated:** {result['updated_record']['type'].title()} → `{result['updated_record']['new_status']}`\n" if result.get("updated_record") else "")
+                + (f"- **Tasks Created:** {len(result.get('created_tasks', []))}\n" if result.get("created_tasks") else "")
+                + f"\n*{result.get('summary', '')}*"
+            ),
+            "tool_calls": executed_tools,
+            "model_used": "gurt-semantic-engine"
+        }
+
+    # 0h. Check Outreach Follow-ups (O3)
+    if any(k in msg_lower for k in ["follow up", "followup", "stalled", "check follow", "who hasn't replied", "pending outreach"]):
+        result = tool_check_outreach_followups(event_id=event_id)
+        executed_tools.append({"tool": "check_outreach_followups", "output": result})
+        sugg_lines = [f"- **{s['name']}** ({s['type'].replace('_', ' ')}) — {s['suggested_action']}" for s in result.get("followup_suggestions", [])[:5]]
+        pending_lines = [f"- `{a['id']}`: {a['title']}" for a in result.get("pending_action_details", [])[:5]]
+        return {
+            "text": (
+                f"📬 **Outreach Follow-Up Report**\n\n"
+                f"**Stalled Contacts:** {result.get('stalled_speakers', 0)} speakers, {result.get('stalled_sponsors', 0)} sponsors\n"
+                f"**Pending Approval Actions:** {result.get('pending_actions', 0)}\n\n"
+                + ("**Suggested Follow-ups:**\n" + "\n".join(sugg_lines) + "\n\n" if sugg_lines else "")
+                + ("**Pending Actions in Action Center:**\n" + "\n".join(pending_lines) + "\n\n" if pending_lines else "")
+                + f"*{result.get('summary', '')}*"
+            ),
+            "tool_calls": executed_tools,
+            "model_used": "gurt-semantic-engine"
+        }
 
     # 1. PDF Form Filling
     if any(k in msg_lower for k in ["pdf", "form", "contract", "booking sheet", "fill form"]):
@@ -469,19 +987,25 @@ def dynamic_semantic_executor(user_message: str, event_id: str = "evt-dubhacks-2
                 recipient_email = email
                 break
 
-        subject = "Invitation: DubHacks 2026 Agentic AI Workshop (Nov 15)"
+        ev = tool_get_event_brief(event_id) or {}
+        event_title = ev.get("title", "Event")
+        event_date = ev.get("date", "upcoming date")
+        event_loc = ev.get("location", "our venue")
+        event_headcount = ev.get("attendee_count", 80)
+
+        subject = f"Invitation: {event_title} ({event_date})"
         if "sponsor" in msg_lower:
-            subject = "Partnership: DubHacks 2026 AI Workshop Sponsorship"
+            subject = f"Partnership: {event_title} Sponsorship"
         elif "catering" in msg_lower or "vendor" in msg_lower:
-            subject = "Vendor Quote Confirmation: DubHacks Workshop 80 Pax Catering"
+            subject = f"Vendor Quote Confirmation: {event_title} Catering"
 
         body = (
             f"Hi {recipient_name},\n\n"
-            f"On behalf of the DubHacks organizing team, we would love to connect regarding the upcoming "
-            f"DubHacks 2026 Agentic AI Workshop on Saturday, November 15, 2026 at the UW HUB Ballroom.\n\n"
-            f"We are bringing together 80 passionate builders and engineers. We'd love to collaborate with you.\n\n"
+            f"On behalf of the {event_title} organizing team, we would love to connect regarding the upcoming "
+            f"{event_title} on {event_date} at {event_loc}.\n\n"
+            f"We are bringing together {event_headcount} passionate builders and attendees. We'd love to collaborate with you.\n\n"
             f"Looking forward to hearing from you!\n\n"
-            f"Best regards,\nDubHacks 2026 Operations Team"
+            f"Best regards,\n{event_title} Operations Team"
         )
 
         if "slack" in msg_lower:
@@ -566,6 +1090,10 @@ def dynamic_semantic_executor(user_message: str, event_id: str = "evt-dubhacks-2
 
     # 5. Vendors & Catering Quotes & Requirements
     if any(k in msg_lower for k in ["vendor", "cater", "food", "quote", "badge", "lunch", "requirement"]):
+        ev = tool_get_event_brief(event_id) or {}
+        event_title = ev.get("title", "this event")
+        attendees = ev.get("attendee_count", 80)
+        budget = ev.get("budget", 2500.0)
         vendors = tool_lookup_vendors(event_id=event_id)
         executed_tools.append({"tool": "lookup_vendors", "output": vendors})
         lines = []
@@ -573,11 +1101,16 @@ def dynamic_semantic_executor(user_message: str, event_id: str = "evt-dubhacks-2
             per_head = f"(${v.get('price_per_head', 0):.2f}/head)" if v.get('price_per_head') else ""
             lines.append(f"- **{v['company_name']}** ({v['category']}): **${v['quote_amount']:,.2f}** {per_head} — `{v['status']}`\n  *{v.get('details', '')}*")
 
+        analysis_note = ""
+        if vendors:
+            best_v = min(vendors, key=lambda x: x.get("quote_amount", 999999))
+            analysis_note = f"\n\n💡 **Trade-off Analysis:** *{best_v['company_name']}* offers the best value at ${best_v['quote_amount']:,.2f}."
+
         return {
             "text": (
-                f"Here are the vendor quotes evaluated for our 80-person workshop against our $2,500 budget:\n\n"
-                + "\n".join(lines) +
-                "\n\n💡 **Trade-off Analysis:** *Ballard Bites & Bowls* offers the best value ($13.50/head, certified nut-free with vegan & GF boxes), staying $280 under alternative delis."
+                f"Here are the vendor quotes evaluated for **{event_title}** ({attendees} attendees, ${budget:,.2f} budget):\n\n"
+                + ("\n".join(lines) if lines else "*No vendor quotes recorded yet for this event.*")
+                + analysis_note
             ),
             "tool_calls": executed_tools,
             "model_used": "gurt-semantic-engine"
@@ -585,31 +1118,89 @@ def dynamic_semantic_executor(user_message: str, event_id: str = "evt-dubhacks-2
 
     # 6. Speakers & Shortlist
     if any(k in msg_lower for k in ["speaker", "keynote", "presenter", "talk"]):
+        ev = tool_get_event_brief(event_id) or {}
+        event_title = ev.get("title", "our event")
         speakers = tool_lookup_speakers(event_id=event_id)
         executed_tools.append({"tool": "lookup_speakers", "output": speakers})
         lines = [f"- **{s['name']}** ({s['org']}): *{s['topic']}* — Status: `{s['status']}` (Slot: {s.get('proposed_time', 'TBD')})" for s in speakers]
         return {
             "text": (
-                f"Here is our current speaker lineup and shortlist for DubHacks 2026:\n\n"
-                + "\n".join(lines) +
-                "\n\nWould you like me to draft an outreach invitation to Dr. Alicia Chen or search for additional AI workshop hosts?"
+                f"Here is our current speaker lineup and shortlist for **{event_title}**:\n\n"
+                + ("\n".join(lines) if lines else "*No speakers shortlisted yet for this event.*")
+                + f"\n\nWould you like me to draft an outreach invitation or search for additional speakers?"
             ),
             "tool_calls": executed_tools,
             "model_used": "gurt-semantic-engine"
         }
 
-    # 7. Sponsors Pipeline
+    # 7. Sponsor Confirmation Breakdown
+    if "confirmed" in msg_lower and any(w in msg_lower for w in ["sponsor", "sponsors", "these", "they"]):
+        sponsors = tool_lookup_sponsors(event_id=event_id)
+        executed_tools.append({"tool": "lookup_sponsors", "output": sponsors})
+        confirmed = [s for s in sponsors if s.get("status") == "confirmed"]
+        discussion = [s for s in sponsors if s.get("status") == "discussion"]
+        pipeline = [s for s in sponsors if s.get("status") == "pipeline"]
+
+        status_sections = []
+        if confirmed:
+            c_lines = "\n".join(f"- **{s['name']}** ({s['tier']} Tier): **${s['amount']:,.2f}** — `confirmed` ({s.get('notes', '')})" for s in confirmed)
+            status_sections.append(f"✅ **Confirmed Sponsors:**\n{c_lines}")
+        else:
+            status_sections.append("✅ **Confirmed Sponsors:** None confirmed yet.")
+
+        if discussion:
+            d_lines = "\n".join(f"- **{s['name']}** ({s['tier']} Tier): **${s['amount']:,.2f}** — `discussion` ({s.get('notes', '')})" for s in discussion)
+            status_sections.append(f"💬 **In Active Discussion:**\n{d_lines}")
+
+        if pipeline:
+            p_lines = "\n".join(f"- **{s['name']}** ({s['tier']} Tier): **${s['amount']:,.2f}** — `pipeline` ({s.get('notes', '')})" for s in pipeline)
+            status_sections.append(f"⏳ **In Prospect Pipeline:**\n{p_lines}")
+
+        return {
+            "text": (
+                "Here is the confirmation status for our sponsors:\n\n"
+                + "\n\n".join(status_sections)
+                + f"\n\nOnly the confirmed sponsors ({len(confirmed)}) have finalized commitments."
+            ),
+            "tool_calls": executed_tools,
+            "model_used": "gurt-semantic-engine"
+        }
+
+    # 7b. Sponsors Pipeline
     if any(k in msg_lower for k in ["sponsor", "sponsorship", "funding", "grant"]):
         sponsors = tool_lookup_sponsors(event_id=event_id)
         executed_tools.append({"tool": "lookup_sponsors", "output": sponsors})
         lines = [f"- **{s['name']}** ({s['tier']} Tier): **${s['amount']:,.2f}** — Status: `{s['status']}`\n  *{s.get('notes', '')}*" for s in sponsors]
+        total_funding = sum(s.get("amount", 0.0) for s in sponsors)
+        confirmed_funding = sum(s.get("amount", 0.0) for s in sponsors if s.get("status") == "confirmed")
+        summary_str = (
+            f"Total pipeline funding: **${total_funding:,.2f}** (with **${confirmed_funding:,.2f}** confirmed)."
+            if sponsors else "*No sponsors in pipeline for this event yet.*"
+        )
         return {
             "text": (
-                f"Here is our current sponsorship pipeline:\n\n"
-                + "\n".join(lines) +
-                "\n\nTotal pledged funding exceeds $4,500, covering our core venue and workshop expenses."
+                f"Here is our current sponsorship pipeline for this event:\n\n"
+                + ("\n".join(lines) if lines else "*No sponsors recorded yet.*")
+                + f"\n\n{summary_str}"
             ),
             "tool_calls": executed_tools,
+            "model_used": "gurt-semantic-engine"
+        }
+
+    # 8. Clarification / Confusion handling
+    if any(k in msg_lower for k in ["what are u saying", "what are you saying", "what do you mean", "confused", "makes no sense", "huh"]):
+        ev = tool_get_event_brief(event_id) or {}
+        event_title = ev.get("title", "our active event")
+        return {
+            "text": (
+                f"Apologies for any confusion! We are currently operating in the workspace for **{event_title}**.\n\n"
+                f"Tell me what you'd like to work on:\n"
+                f"- **New Event:** *'I want to plan a Loveable Community Workshop for 30 people with a $400 budget'*\n"
+                f"- **Outreach:** *'Draft an outreach invitation to Dr. Alicia Chen'*\n"
+                f"- **Vendors:** *'Compare catering vendor quotes under $15/head'*\n"
+                f"- **Schedule:** *'Generate the event run-of-show'* or *'Show tasks'*"
+            ),
+            "tool_calls": [],
             "model_used": "gurt-semantic-engine"
         }
 
@@ -617,13 +1208,18 @@ def dynamic_semantic_executor(user_message: str, event_id: str = "evt-dubhacks-2
     overview = tool_get_event_overview(event_id)
     executed_tools.append({"tool": "get_event_overview", "output": overview})
     ev = overview.get("event", {})
+    ev_title = ev.get("title", "Event Operations")
+    ev_date = ev.get("date", "Upcoming")
+    ev_loc = ev.get("location", "TBD Venue")
+    ev_headcount = ev.get("attendee_count", 0)
+    ev_budget = ev.get("budget", 0.0)
     return {
         "text": (
-            f"Yo! I'm Gurt, your event operations agent for **{ev.get('title', 'DubHacks 2026 AI Workshop')}**.\n\n"
-            f"- **Date & Venue:** {ev.get('date')} at {ev.get('location')}\n"
-            f"- **Scale:** {ev.get('attendee_count')} attendees | **Budget:** ${ev.get('budget', 0):,.2f}\n"
-            f"- **Current Progress:** {overview.get('speakers')} | {overview.get('tasks')}\n"
-            f"- **Pending Actions:** {overview.get('pending_actions')} awaiting approval in Action Center\n\n"
+            f"Yo! I'm Gurt, your event operations agent for **{ev_title}**.\n\n"
+            f"- **Date & Venue:** {ev_date} at {ev_loc}\n"
+            f"- **Scale:** {ev_headcount} attendees | **Budget:** ${ev_budget:,.2f}\n"
+            f"- **Current Progress:** {overview.get('speakers', '0')} | {overview.get('tasks', '0')}\n"
+            f"- **Pending Actions:** {overview.get('pending_actions', 0)} awaiting approval in Action Center\n\n"
             f"What should we work on?\n"
             f"- **Outreach:** *'Draft an outreach email to Dr. Alicia Chen'*\n"
             f"- **Vendors:** *'Compare catering quotes under $15/head'*\n"
@@ -638,28 +1234,66 @@ def dynamic_semantic_executor(user_message: str, event_id: str = "evt-dubhacks-2
 def run_orchestrator(
     user_message: str,
     conversation_history: list[dict[str, str]] | None = None,
-    event_id: str = "evt-dubhacks-2026"
+    event_id: str = "evt-dubhacks-2026",
+    model_name: str | None = None
 ) -> dict[str, Any]:
     """Execute the Gurt orchestrating turn:
-    1. Try native Gemini Function Calling with live API.
-    2. If API is down/rate-limited, gracefully fall back to the dynamic semantic engine.
+    1. If model_name is 'semantic-engine', route directly to dynamic local engine.
+    2. If model_name is Grok, route via xAI API.
+    3. Try native Gemini Function Calling with selected or default Gemini model.
+    4. Fall back to the dynamic semantic engine on rate-limit/error.
     """
     history = conversation_history or []
-    api_key = settings.gemini_api_key
     system_prompt = get_system_instruction(event_id)
 
-    # Try native Gemini API call if key is present
+    # 1. Direct offline semantic engine option
+    if model_name in ("semantic-engine", "gurt-semantic-engine"):
+        return dynamic_semantic_executor(user_message, conversation_history=history, event_id=event_id)
+
+    # 2. Grok / xAI model option
+    if model_name and "grok" in model_name.lower() and settings.grok_api_key and not settings.grok_api_key.startswith("grok_dummy"):
+        try:
+            messages = [{"role": "system", "content": system_prompt}]
+            for h in history[-4:]:
+                messages.append({"role": "user" if h.get("role") == "user" else "assistant", "content": h.get("content", "")})
+            messages.append({"role": "user", "content": user_message})
+
+            grok_res = requests.post(
+                "https://api.x.ai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.grok_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={"model": "grok-2-latest", "messages": messages, "temperature": 0.3},
+                timeout=10.0
+            )
+            if grok_res.status_code == 200:
+                ans = grok_res.json()["choices"][0]["message"]["content"]
+                return {
+                    "text": ans,
+                    "tool_calls": [],
+                    "model_used": "xai/grok-2-latest"
+                }
+        except Exception:
+            pass
+
+    # 3. Gemini models
+    api_key = settings.gemini_api_key
     if api_key and not api_key.startswith("AQ.dummy"):
+        requested_gemini = model_name if (model_name and "gemini" in model_name.lower()) else settings.gemini_model
         models_to_try = [
-            settings.gemini_model,
-            "gemini-3-flash-preview",
+            requested_gemini,
+            "gemini-3.8-flash",
+            "gemini-3.5-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-3.5-flash-lite",
             "gemini-flash-latest"
         ]
         seen = set()
         clean_models = [m for m in models_to_try if not (m in seen or seen.add(m))]
 
-        for model_name in clean_models:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+        for m_name in clean_models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_name}:generateContent?key={api_key}"
 
             contents = []
             for h in history[-4:]:
@@ -716,33 +1350,46 @@ def run_orchestrator(
                         "tools": GEMINI_TOOLS
                     }
 
+                    switched_id = None
+                    for et in executed_tools:
+                        if et.get("tool") in ("create_event", "switch_event"):
+                            out = et.get("output", {})
+                            if out.get("event_id"):
+                                switched_id = out["event_id"]
+
                     r2 = requests.post(url, json=follow_up_payload, timeout=10.0)
                     if r2.status_code == 200:
                         cand2 = r2.json().get("candidates", [{}])[0]
                         text2 = cand2.get("content", {}).get("parts", [{}])[0].get("text", "")
                         if text2:
-                            return {
+                            resp_dict = {
                                 "text": text2,
                                 "tool_calls": executed_tools,
-                                "model_used": f"gemini/{model_name}"
+                                "model_used": f"gemini/{m_name}"
                             }
+                            if switched_id:
+                                resp_dict["switched_event_id"] = switched_id
+                            return resp_dict
 
-                    tool_summary_lines = [f"- **{et['tool']}**: `{json.dumps(et['output'])[:120]}...`" for et in executed_tools]
-                    return {
-                        "text": f"I executed the requested action:\n\n" + "\n".join(tool_summary_lines),
+                    formatted_text = format_tool_execution_response(executed_tools, event_id=switched_id or event_id)
+                    resp_dict = {
+                        "text": formatted_text,
                         "tool_calls": executed_tools,
-                        "model_used": f"gemini/{model_name}"
+                        "model_used": f"gemini/{m_name}"
                     }
+                    if switched_id:
+                        resp_dict["switched_event_id"] = switched_id
+                    return resp_dict
 
                 text_part = next((p.get("text") for p in parts if "text" in p), None)
                 if text_part:
                     return {
                         "text": text_part,
                         "tool_calls": [],
-                        "model_used": f"gemini/{model_name}"
+                        "model_used": f"gemini/{m_name}"
                     }
 
             except Exception:
                 continue
 
-    return dynamic_semantic_executor(user_message, event_id=event_id)
+    return dynamic_semantic_executor(user_message, conversation_history=history, event_id=event_id)

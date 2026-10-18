@@ -150,6 +150,33 @@ def init_db() -> None:
         status TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY,
+        event_id TEXT DEFAULT 'evt-dubhacks-2026',
+        title TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        tool_calls TEXT,
+        model_used TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS memories (
+        id TEXT PRIMARY KEY,
+        event_id TEXT DEFAULT 'evt-dubhacks-2026',
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        category TEXT NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """)
 
     # Apply incremental migrations to existing databases
@@ -163,6 +190,8 @@ def init_db() -> None:
 
     _ensure_column(cursor, "speakers", "event_id TEXT DEFAULT 'evt-dubhacks-2026'")
     _ensure_column(cursor, "vendors", "event_id TEXT DEFAULT 'evt-dubhacks-2026'")
+    _ensure_column(cursor, "vendors", "compliance_verified INTEGER DEFAULT 0")
+    _ensure_column(cursor, "vendors", "compliance_notes TEXT DEFAULT ''")
     _ensure_column(cursor, "sponsors", "event_id TEXT DEFAULT 'evt-dubhacks-2026'")
     _ensure_column(cursor, "tasks", "event_id TEXT DEFAULT 'evt-dubhacks-2026'")
     _ensure_column(cursor, "action_proposals", "event_id TEXT DEFAULT 'evt-dubhacks-2026'")
@@ -174,7 +203,59 @@ def init_db() -> None:
     cursor.execute("UPDATE tasks SET event_id = 'evt-dubhacks-2026' WHERE event_id IS NULL OR event_id = ''")
     cursor.execute("UPDATE action_proposals SET event_id = 'evt-dubhacks-2026' WHERE event_id IS NULL OR event_id = ''")
 
-    # Check if event already seeded
+    # Restore DubHacks 2026 benchmark event details if overwritten
+    cursor.execute("""
+        UPDATE events
+        SET title = 'DubHacks 2026 Agentic AI Workshop',
+            location = 'UW HUB Ballroom & Room 214',
+            attendee_count = 80,
+            budget = 2500.0,
+            goals = 'Deliver an intensive, hands-on 1-day agentic AI builder workshop with keynotes, technical tracks, and live project demos for 80 attendees.',
+            dietary_specs = 'Nut-free facility required; 15 vegan, 10 gluten-free, 5 halal meal boxes needed.',
+            av_requirements = '2 handheld wireless mics, 1 podium lapel mic, dual 4K HDMI projectors in Room 214, stable high-bandwidth Wi-Fi for 80 concurrent dev laptops.'
+        WHERE id = 'evt-dubhacks-2026' AND title != 'DubHacks 2026 Agentic AI Workshop'
+    """)
+
+    # Seed distinct Loveable Event record if not present
+    cursor.execute("SELECT COUNT(*) FROM events WHERE id = 'evt-loveable-2026'")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("""
+            INSERT INTO events (
+                id, title, date, location, attendee_count, budget, status,
+                goals, theme, venue_contact, dietary_specs, av_requirements
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            "evt-loveable-2026",
+            "Loveable Community Builder Meetup",
+            "2026-11-20 18:00",
+            "Seattle Tech Hub Lounge",
+            20,
+            400.0,
+            "planning",
+            "Host an intimate community meetup for 20 AI creators and builders to demo projects, network, and exchange feedback.",
+            "Full-Stack AI Prototyping & Loveable Workflows",
+            "Seattle Tech Hub Community Team (events@seattletechhub.example)",
+            "5 vegan wraps, 5 vegetarian sandwiches, 10 assorted snack boxes.",
+            "1 presentation monitor, 1 wireless mic, fast guest Wi-Fi."
+        ))
+
+        # Seed distinct tasks for Loveable event
+        loveable_tasks = [
+            ("tsk-lov-001", "evt-loveable-2026", "Confirm Seattle Tech Hub lounge reservation", "Diya Lead", "Venue", "2026-11-10", "in_progress", "None"),
+            ("tsk-lov-002", "evt-loveable-2026", "Source snack boxes & beverages for 20 pax ($400 cap)", "Diya Lead", "Catering", "2026-11-14", "todo", "tsk-lov-001"),
+            ("tsk-lov-003", "evt-loveable-2026", "Send participant RSVP reminder and lightning demo form", "Diya Lead", "Outreach", "2026-11-16", "todo", "None")
+        ]
+        cursor.executemany("INSERT INTO tasks (id, event_id, title, owner, category, deadline, status, dependencies) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", loveable_tasks)
+
+        # Seed distinct vendor requirements for Loveable event
+        loveable_reqs = [
+            ("vrq-lov-001", "evt-loveable-2026", "Catering", "Light evening snacks and drinks for 20 people ($20/head limit)", 20, 400.0, "quoted", "Check for dairy and gluten restrictions among RSVPs."),
+            ("vrq-lov-002", "evt-loveable-2026", "Badges & Signage", "20 name badges and 1 welcome directional sign", 20, 60.0, "todo", "Use Seattle Tech Hub color printer.")
+        ]
+        cursor.executemany("INSERT INTO vendor_requirements (id, event_id, category, specification, headcount, budget_allocated, status, unknowns) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", loveable_reqs)
+
+    # Check if benchmark event already seeded
     cursor.execute("SELECT COUNT(*) FROM events")
     if cursor.fetchone()[0] == 0:
         cursor.execute("""
@@ -257,6 +338,28 @@ def init_db() -> None:
         ]
         cursor.executemany("INSERT INTO schedules (id, event_id, time_slot, activity, location, owner, activity_type, dependencies, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", schedule_seed)
 
+    # Seed default conversation if empty
+    cursor.execute("SELECT COUNT(*) FROM conversations")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("""
+            INSERT INTO conversations (id, event_id, title)
+            VALUES (?, ?, ?)
+        """, ("conv-default", "evt-dubhacks-2026", "General Operations & Launch"))
+        cursor.execute("""
+            INSERT INTO messages (id, conversation_id, role, content, model_used)
+            VALUES (?, ?, ?, ?, ?)
+        """, ("msg-init", "conv-default", "assistant", "Yo! I'm Gurt, your autonomous event operations agent for DubHacks 2026. What should we work on today?", "gemini-3.8-flash"))
+
+    # Seed initial memories if empty
+    cursor.execute("SELECT COUNT(*) FROM memories")
+    if cursor.fetchone()[0] == 0:
+        initial_memories = [
+            ("mem-001", "evt-dubhacks-2026", "catering_budget_ceiling", "Target maximum $15.00/head for attendee lunch catering.", "budget_preference"),
+            ("mem-002", "evt-dubhacks-2026", "dietary_compliance", "100% nut-free facility requirement is strict; always verify supplier kitchen allergen protocols.", "dietary_rule"),
+            ("mem-003", "evt-dubhacks-2026", "av_lead", "Jordan Tech is primary on-site AV contact with UW HUB technicians.", "team_assignment")
+        ]
+        cursor.executemany("INSERT INTO memories (id, event_id, key, value, category) VALUES (?, ?, ?, ?, ?)", initial_memories)
+
     conn.commit()
     conn.close()
 
@@ -284,14 +387,20 @@ def query_records(table: str, search: str = "", event_id: str = "evt-dubhacks-20
     return rows
 
 
-def get_event_brief(event_id: str = "evt-dubhacks-2026") -> dict[str, Any]:
-    """Retrieve full event brief."""
+def get_event_brief(event_id: str | None = None) -> dict[str, Any]:
+    """Retrieve full event brief for the given event_id, or the first active event."""
     conn = get_connection()
     c = conn.cursor()
-    c.execute("SELECT * FROM events WHERE id = ? LIMIT 1", (event_id,))
-    row = c.fetchone()
+    row = None
+    if event_id:
+        c.execute("SELECT * FROM events WHERE id = ? LIMIT 1", (event_id,))
+        row = c.fetchone()
+        if not row:
+            # Also try matching by title case-insensitively
+            c.execute("SELECT * FROM events WHERE title LIKE ? LIMIT 1", (f"%{event_id}%",))
+            row = c.fetchone()
     if not row:
-        c.execute("SELECT * FROM events LIMIT 1")
+        c.execute("SELECT * FROM events ORDER BY created_at ASC LIMIT 1")
         row = c.fetchone()
     event_data = dict(row or {})
     conn.close()
@@ -328,12 +437,53 @@ def update_event_brief(event_id: str, updates: dict[str, Any]) -> dict[str, Any]
     return get_event_brief(event_id)
 
 
-def create_event_brief(brief: dict[str, Any]) -> dict[str, Any]:
-    """Create a new event brief with dedicated event_id."""
-    event_id = brief.get("id") or f"evt-{uuid.uuid4().hex[:6]}"
+def list_all_events() -> list[dict[str, Any]]:
+    """List all registered events with live counts of tasks, speakers, and vendors."""
     conn = get_connection()
     c = conn.cursor()
+    c.execute("SELECT * FROM events ORDER BY created_at ASC")
+    events = [dict(r) for r in c.fetchall()]
+
+    for ev in events:
+        eid = ev["id"]
+        c.execute("SELECT COUNT(*) FROM tasks WHERE event_id = ?", (eid,))
+        ev["tasks_count"] = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM speakers WHERE event_id = ?", (eid,))
+        ev["speakers_count"] = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM vendors WHERE event_id = ?", (eid,))
+        ev["vendors_count"] = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM sponsors WHERE event_id = ?", (eid,))
+        ev["sponsors_count"] = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM action_proposals WHERE event_id = ? AND status = 'pending_approval'", (eid,))
+        ev["pending_actions_count"] = c.fetchone()[0]
+
+    conn.close()
+    return events
+
+
+def create_event_brief(brief: dict[str, Any]) -> dict[str, Any]:
+    """Create a new event brief with clean slugged event_id and auto-seeded starter operations."""
+    import re
+    title = brief.get("title", "New Event").strip()
+    clean_slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:18] or "event"
+
+    conn = get_connection()
+    c = conn.cursor()
+
+    # Determine unique event ID
+    candidate_id = brief.get("id") or f"evt-{clean_slug}"
+    c.execute("SELECT COUNT(*) FROM events WHERE id = ?", (candidate_id,))
+    if c.fetchone()[0] > 0:
+        event_id = f"evt-{clean_slug}-{uuid.uuid4().hex[:4]}"
+    else:
+        event_id = candidate_id
+
     now = datetime.now().isoformat()
+    attendees = int(brief.get("attendee_count", 80))
+    budget = float(brief.get("budget", 2500.0))
+    location = brief.get("location", "UW Campus Venue")
+    date_str = brief.get("date", "2026-11-20 09:00")
+
     c.execute("""
         INSERT INTO events (
             id, title, date, location, attendee_count, budget, status,
@@ -341,23 +491,91 @@ def create_event_brief(brief: dict[str, Any]) -> dict[str, Any]:
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         event_id,
-        brief.get("title", "New Event"),
-        brief.get("date", "2026-11-15 09:00"),
-        brief.get("location", "UW HUB"),
-        int(brief.get("attendee_count", 80)),
-        float(brief.get("budget", 2500.0)),
+        title,
+        date_str,
+        location,
+        attendees,
+        budget,
         brief.get("status", "planning"),
-        brief.get("goals", ""),
-        brief.get("theme", ""),
+        brief.get("goals", f"Plan and execute {title} for {attendees} attendees."),
+        brief.get("theme", brief.get("theme", "")),
         brief.get("venue_contact", ""),
-        brief.get("dietary_specs", ""),
-        brief.get("av_requirements", ""),
+        brief.get("dietary_specs", "Vegetarian, Vegan, GF options required."),
+        brief.get("av_requirements", "Microphone, presentation display/projector, Wi-Fi."),
         now,
         now
     ))
+
+    # Auto-seed initial starter tasks tailored to the event
+    starter_tasks = [
+        (f"tsk-{uuid.uuid4().hex[:5]}", event_id, f"Confirm {location} reservation & access terms", "Event Lead", "Venue", date_str[:10], "in_progress", "None"),
+        (f"tsk-{uuid.uuid4().hex[:5]}", event_id, f"Source catering & refreshments for {attendees} pax (${round(budget * 0.45):,} target)", "Ops Lead", "Catering", date_str[:10], "todo", "None"),
+        (f"tsk-{uuid.uuid4().hex[:5]}", event_id, f"Prepare attendee registration, badges & agendas ({attendees} pax)", "Ops Lead", "Logistics", date_str[:10], "todo", "None")
+    ]
+    c.executemany("INSERT INTO tasks (id, event_id, title, owner, category, deadline, status, dependencies) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", starter_tasks)
+
+    # Auto-seed initial vendor requirement
+    per_head_target = round(budget * 0.45 / max(attendees, 1), 2)
+    c.execute("""
+        INSERT INTO vendor_requirements (id, event_id, category, specification, headcount, budget_allocated, status, unknowns)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        f"vrq-{uuid.uuid4().hex[:5]}",
+        event_id,
+        "Catering",
+        f"Lunch/refreshments for {attendees} attendees. Target ~${per_head_target:.2f}/head with dietary accommodations.",
+        attendees,
+        round(budget * 0.45, 2),
+        "pending_sourcing",
+        "Final RSVP dietary restrictions to be verified."
+    ))
+
     conn.commit()
     conn.close()
     return get_event_brief(event_id)
+
+
+def update_vendor_compliance(vendor_id: str, verified: bool, notes: str = "") -> dict[str, Any]:
+    """Update compliance verification status (license, permits, insurance COI) for a supplier."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "UPDATE vendors SET compliance_verified = ?, compliance_notes = ? WHERE id = ?",
+        (1 if verified else 0, notes, vendor_id)
+    )
+    conn.commit()
+    c.execute("SELECT * FROM vendors WHERE id = ?", (vendor_id,))
+    row = c.fetchone()
+    conn.close()
+    return dict(row or {})
+
+
+def update_speaker_or_sponsor_status(
+    table: str,
+    record_id: str,
+    status: str,
+    proposed_time: str | None = None,
+    notes: str | None = None
+) -> dict[str, Any]:
+    """Update speaker or sponsor status following outreach reply processing."""
+    conn = get_connection()
+    c = conn.cursor()
+    if table == "speakers":
+        if proposed_time:
+            c.execute("UPDATE speakers SET status = ?, proposed_time = ? WHERE id = ?", (status, proposed_time, record_id))
+        else:
+            c.execute("UPDATE speakers SET status = ? WHERE id = ?", (status, record_id))
+        c.execute("SELECT * FROM speakers WHERE id = ?", (record_id,))
+    else:
+        if notes:
+            c.execute("UPDATE sponsors SET status = ?, notes = ? WHERE id = ?", (status, notes, record_id))
+        else:
+            c.execute("UPDATE sponsors SET status = ? WHERE id = ?", (status, record_id))
+        c.execute("SELECT * FROM sponsors WHERE id = ?", (record_id,))
+    row = c.fetchone()
+    conn.commit()
+    conn.close()
+    return dict(row or {})
 
 
 def get_vendor_requirements(event_id: str = "evt-dubhacks-2026") -> list[dict[str, Any]]:
@@ -533,3 +751,155 @@ def get_event_summary(event_id: str = "evt-dubhacks-2026") -> dict[str, Any]:
         "pending_actions": pending_actions,
         "schedule_items": total_schedule_items
     }
+
+
+def get_conversations(event_id: str = "evt-dubhacks-2026") -> list[dict[str, Any]]:
+    """Retrieve all conversations for the event, ordered by recency."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT * FROM conversations WHERE event_id = ? ORDER BY updated_at DESC", (event_id,))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+
+def create_conversation(event_id: str = "evt-dubhacks-2026", title: str = "New Conversation") -> dict[str, Any]:
+    """Create a new conversation session."""
+    conv_id = f"conv-{uuid.uuid4().hex[:6]}"
+    now = datetime.now().isoformat()
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO conversations (id, event_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        (conv_id, event_id, title, now, now)
+    )
+    # Add initial greeting message
+    c.execute(
+        "INSERT INTO messages (id, conversation_id, role, content, model_used) VALUES (?, ?, ?, ?, ?)",
+        (f"msg-{uuid.uuid4().hex[:6]}", conv_id, "assistant", "Yo! I'm Gurt, your autonomous event operations agent. What should we work on in this thread?", "gemini-3.8-flash")
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "id": conv_id,
+        "event_id": event_id,
+        "title": title,
+        "created_at": now,
+        "updated_at": now
+    }
+
+
+def delete_conversation(conversation_id: str) -> bool:
+    """Delete a conversation and its messages."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
+    c.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def get_conversation_messages(conversation_id: str) -> list[dict[str, Any]]:
+    """Get all messages for a specific conversation."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC", (conversation_id,))
+    rows = [dict(r) for r in c.fetchall()]
+    for r in rows:
+        if r.get("tool_calls"):
+            try:
+                r["tool_calls"] = json.loads(r["tool_calls"])
+            except Exception:
+                pass
+    conn.close()
+    return rows
+
+
+def save_message(
+    conversation_id: str,
+    role: str,
+    content: str,
+    tool_calls: list[dict[str, Any]] | None = None,
+    model_used: str | None = None
+) -> dict[str, Any]:
+    """Save a user or assistant message to SQLite history and touch conversation updated_at."""
+    msg_id = f"msg-{uuid.uuid4().hex[:6]}"
+    now = datetime.now().isoformat()
+    tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO messages (id, conversation_id, role, content, tool_calls, model_used, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (msg_id, conversation_id, role, content, tool_calls_json, model_used, now)
+    )
+    # Touch conversation timestamp
+    c.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conversation_id))
+    conn.commit()
+    conn.close()
+
+    return {
+        "id": msg_id,
+        "conversation_id": conversation_id,
+        "role": role,
+        "content": content,
+        "tool_calls": tool_calls,
+        "model_used": model_used,
+        "created_at": now
+    }
+
+
+def get_memories(event_id: str = "evt-dubhacks-2026") -> list[dict[str, Any]]:
+    """Retrieve persistent memories / organizer preferences."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("SELECT * FROM memories WHERE event_id = ? ORDER BY updated_at DESC", (event_id,))
+    rows = [dict(r) for r in c.fetchall()]
+    conn.close()
+    return rows
+
+
+def save_memory(
+    event_id: str = "evt-dubhacks-2026",
+    key: str = "",
+    value: str = "",
+    category: str = "preference"
+) -> dict[str, Any]:
+    """Save or update a persistent memory fact."""
+    mem_id = f"mem-{uuid.uuid4().hex[:6]}"
+    now = datetime.now().isoformat()
+    conn = get_connection()
+    c = conn.cursor()
+    # Check if key already exists for this event
+    c.execute("SELECT id FROM memories WHERE event_id = ? AND key = ?", (event_id, key))
+    existing = c.fetchone()
+    if existing:
+        c.execute("UPDATE memories SET value = ?, category = ?, updated_at = ? WHERE id = ?", (value, category, now, existing[0]))
+        actual_id = existing[0]
+    else:
+        c.execute(
+            "INSERT INTO memories (id, event_id, key, value, category, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (mem_id, event_id, key, value, category, now)
+        )
+        actual_id = mem_id
+    conn.commit()
+    conn.close()
+    return {
+        "id": actual_id,
+        "event_id": event_id,
+        "key": key,
+        "value": value,
+        "category": category,
+        "updated_at": now
+    }
+
+
+def delete_memory(memory_id: str) -> bool:
+    """Delete a memory item."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+    conn.commit()
+    conn.close()
+    return True

@@ -112,7 +112,7 @@ def run_tests():
         bio="Author of 'Resilient Turn-Taking in Agent Swarms' (NeurIPS 2025).",
         contact_email="alicia.chen@cs.washington.edu"
     )
-    assert prop_spk["status"] == "added_to_shortlist", "Speaker candidate proposal failed"
+    assert prop_spk["status"] in ("added_to_shortlist", "updated_shortlist"), "Speaker candidate proposal failed"
     print(f" -> Saved speaker candidate: {prop_spk['name']} [ID: {prop_spk['speaker_id']}]")
 
     # Researched sponsor prospect
@@ -123,7 +123,7 @@ def run_tests():
         notes="Offered workshop grant covering catering and student travel stipends.",
         contact_email="grants@aisafety.example"
     )
-    assert prop_spn["status"] == "recorded_in_pipeline", "Sponsor candidate saving failed"
+    assert prop_spn["status"] in ("recorded_in_pipeline", "updated_in_pipeline"), "Sponsor candidate saving failed"
     print(f" -> Saved sponsor prospect: {prop_spn['name']} (${prop_spn['amount']})")
 
     # 3. Vendor Needs Discovery & Quotes (Belonging to Same Event with Unknowns)

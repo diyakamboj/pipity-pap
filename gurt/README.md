@@ -98,3 +98,14 @@ Gurt enforces that **no email is ever sent, no contract is ever submitted, and n
 - Outreach drafts are queued in the **Action Center** in `pending_approval` state.
 - Organizers can edit subjects and message bodies prior to approval.
 - One-click approval executes through configured providers and locks the action to prevent double execution.
+
+---
+
+## 6. Modern Dashboard & Multi-Session Experience
+
+Gurt provides an independent, clean user experience inspired by top modern AI interfaces:
+- **Collapsible Chat Sidebar:** Create, switch between, and delete multiple conversation threads with distinct focus areas (e.g. "Speaker Outreach", "Catering & Budget").
+- **Persistent Messages (SQLite):** Every user turn, model response, tool execution tag, and model identifier is stored in `gurt_events.db` and reloaded automatically when toggling between threads.
+- **Model Selector Dropdown:** Seamlessly switch between **Gemini 3.8 Flash (Default)**, **Gemini 3.0 Flash Preview**, **Grok 2 (xAI)**, and the offline **Dynamic Semantic Engine** directly from the header without server restarts.
+- **Persistent Organizer Memory:** Store custom rules, dietary constraints, and preferences (e.g., *"Always order 20% certified vegan boxed meals"*). Stored memories are dynamically injected into Gurt's system instructions and persist across all chats.
+

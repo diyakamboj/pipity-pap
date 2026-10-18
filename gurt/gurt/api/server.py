@@ -24,10 +24,19 @@ from gurt.db import (
     get_event_brief,
     update_event_brief,
     create_event_brief,
+    list_all_events,
     get_vendor_requirements,
     save_vendor_requirement,
     get_schedule_items,
-    get_pdf_documents
+    get_pdf_documents,
+    get_conversations,
+    create_conversation,
+    delete_conversation,
+    get_conversation_messages,
+    save_message,
+    get_memories,
+    save_memory,
+    delete_memory
 )
 from gurt.orchestrator import run_orchestrator
 from gurt.tools.outreach_tools import execute_approved_action, dismiss_action, tool_update_draft
@@ -62,6 +71,32 @@ class ChatRequest(BaseModel):
     message: str
     history: list[dict[str, str]] = []
     event_id: str = "evt-dubhacks-2026"
+    conversation_id: str | None = None
+    model: str | None = None
+
+
+class ConversationCreateRequest(BaseModel):
+    title: str = "New Conversation"
+    event_id: str = "evt-dubhacks-2026"
+
+
+class MemoryCreateRequest(BaseModel):
+    key: str
+    value: str
+    category: str = "preference"
+    event_id: str = "evt-dubhacks-2026"
+
+
+class EventCreateRequest(BaseModel):
+    title: str
+    attendee_count: int = 50
+    budget: float = 1000.0
+    location: str = "Seattle Tech Hub"
+    date: str = "TBD"
+    theme: str = ""
+    goals: str = ""
+    dietary_specs: str = ""
+    av_requirements: str = ""
 
 
 class TaskRequest(BaseModel):
@@ -142,16 +177,135 @@ def update_brief_endpoint(req: BriefUpdateRequest, event_id: str = Query("evt-du
     return update_event_brief(event_id, updates)
 
 
+@app.get("/api/events")
+def list_events_endpoint() -> list[dict[str, Any]]:
+    return list_all_events()
+
+
+@app.post("/api/events")
+def create_event_endpoint(req: EventCreateRequest) -> dict[str, Any]:
+    brief_data = {
+        "title": req.title,
+        "attendee_count": req.attendee_count,
+        "budget": req.budget,
+        "location": req.location,
+        "date": req.date,
+        "theme": req.theme,
+        "goals": req.goals,
+        "dietary_specs": req.dietary_specs,
+        "av_requirements": req.av_requirements,
+        "status": "planning"
+    }
+    return create_event_brief(brief_data)
+
+
+@app.get("/api/events/{event_id}")
+def get_event_by_id(event_id: str) -> dict[str, Any]:
+    brief = get_event_brief(event_id)
+    if not brief or not brief.get("id"):
+        raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found")
+    return brief
+
+
 @app.get("/api/records/{table}")
 def get_table_records(table: str, event_id: str = Query("evt-dubhacks-2026")) -> list[dict[str, Any]]:
     return query_records(table, event_id=event_id)
+
+
+@app.get("/api/models")
+def list_models() -> list[dict[str, str]]:
+    return [
+        {"id": "gemini-3.8-flash", "name": "Gemini 3.8 Flash (Default)"},
+        {"id": "gemini-3-flash-preview", "name": "Gemini 3.0 Flash Preview"},
+        {"id": "xai/grok-2-latest", "name": "Grok 2 (xAI)"},
+        {"id": "semantic-engine", "name": "Gurt Dynamic Semantic Engine"}
+    ]
+
+
+@app.get("/api/conversations")
+def list_conversations(event_id: str = Query("evt-dubhacks-2026")) -> list[dict[str, Any]]:
+    return get_conversations(event_id)
+
+
+@app.post("/api/conversations")
+def create_conversation_endpoint(req: ConversationCreateRequest) -> dict[str, Any]:
+    return create_conversation(event_id=req.event_id, title=req.title)
+
+
+@app.get("/api/conversations/{conversation_id}/messages")
+def get_conversation_messages_endpoint(conversation_id: str) -> list[dict[str, Any]]:
+    return get_conversation_messages(conversation_id)
+
+
+@app.delete("/api/conversations/{conversation_id}")
+def delete_conversation_endpoint(conversation_id: str) -> dict[str, Any]:
+    delete_conversation(conversation_id)
+    return {"status": "deleted", "id": conversation_id}
+
+
+@app.get("/api/memories")
+def get_memories_endpoint(event_id: str = Query("evt-dubhacks-2026")) -> list[dict[str, Any]]:
+    return get_memories(event_id)
+
+
+@app.post("/api/memories")
+def create_memory_endpoint(req: MemoryCreateRequest) -> dict[str, Any]:
+    return save_memory(
+        event_id=req.event_id,
+        key=req.key,
+        value=req.value,
+        category=req.category
+    )
+
+
+@app.delete("/api/memories/{memory_id}")
+def delete_memory_endpoint(memory_id: str) -> dict[str, Any]:
+    delete_memory(memory_id)
+    return {"status": "deleted", "id": memory_id}
 
 
 @app.post("/api/chat")
 def chat(req: ChatRequest) -> dict[str, Any]:
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
-    return run_orchestrator(req.message, req.history, event_id=req.event_id)
+
+    conv_id = req.conversation_id
+    if not conv_id:
+        title_snippet = req.message[:28] + ("..." if len(req.message) > 28 else "")
+        conv = create_conversation(event_id=req.event_id, title=title_snippet)
+        conv_id = conv["id"]
+
+    history = req.history
+    if not history and conv_id:
+        db_msgs = get_conversation_messages(conv_id)
+        history = [{"role": m["role"], "content": m["content"]} for m in db_msgs]
+
+    # Save user turn into SQLite
+    save_message(
+        conversation_id=conv_id,
+        role="user",
+        content=req.message
+    )
+
+    # Run orchestrator
+    resp = run_orchestrator(
+        req.message,
+        history,
+        event_id=req.event_id,
+        model_name=req.model
+    )
+
+    # Save assistant turn into SQLite
+    save_message(
+        conversation_id=conv_id,
+        role="assistant",
+        content=resp.get("text", ""),
+        tool_calls=resp.get("tool_calls"),
+        model_used=resp.get("model_used")
+    )
+
+    resp["conversation_id"] = conv_id
+    return resp
 
 
 @app.get("/api/actions")

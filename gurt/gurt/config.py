@@ -33,7 +33,7 @@ class Settings(BaseModel):
     # LLM Settings
     llm_provider: str = os.getenv("LLM_PROVIDER", "gemini").lower()
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o")
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "")

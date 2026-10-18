@@ -349,3 +349,252 @@ def execute_approved_action(action_id: str) -> dict[str, Any]:
         "executed_at": now,
         "result": execution_result
     }
+
+
+def tool_process_outreach_reply(
+    contact_name: str,
+    reply_text: str,
+    event_id: str = "evt-dubhacks-2026"
+) -> dict[str, Any]:
+    """Parse a pasted speaker or sponsor reply and extract structured data (O2).
+    Detects availability, topic confirmation, dietary needs, sponsor commitment tier,
+    and proposed time slots. Updates the speaker/sponsor persistent record status.
+    """
+    conn = get_connection()
+    c = conn.cursor()
+
+    reply_lower = reply_text.lower()
+
+    # ---- Extract signals from the reply ----
+    extracted = {
+        "interest_level": "interested" if any(w in reply_lower for w in ["love to", "happy to", "excited", "thrilled", "delighted", "honored", "pleased", "available", "yes", "confirmed", "let's do it", "i'm in", "count me in", "would love"]) else
+                          "declined" if any(w in reply_lower for w in ["can't", "cannot", "decline", "unavailable", "won't be able", "not able"]) else
+                          "needs_clarification",
+        "dietary_needs": [],
+        "proposed_times": [],
+        "topic_confirmed": False,
+        "conditions": [],
+        "follow_up_needed": []
+    }
+
+    # Dietary signals
+    for diet in ["vegan", "vegetarian", "gluten-free", "halal", "kosher", "nut-free", "dairy-free"]:
+        if diet in reply_lower:
+            extracted["dietary_needs"].append(diet)
+
+    # Time slot signals
+    import re
+    time_patterns = re.findall(r'\b(\d{1,2}:\d{2}\s*(?:am|pm|AM|PM)?)\b', reply_text)
+    date_patterns = re.findall(r'\b(\w+\s+\d{1,2}(?:st|nd|rd|th)?)\b', reply_text)
+    extracted["proposed_times"] = time_patterns[:3]
+    if date_patterns:
+        extracted["proposed_times"] = [f"{d} {t}" for d, t in zip(date_patterns[:2], time_patterns[:2])] or extracted["proposed_times"]
+
+    # Topic confirmation
+    if any(w in reply_lower for w in ["topic", "presentation", "talk about", "speaking on", "my session"]):
+        extracted["topic_confirmed"] = True
+
+    # Conditions
+    if any(w in reply_lower for w in ["honorarium", "compensation", "stipend", "travel", "hotel", "flight"]):
+        extracted["conditions"].append("Financial terms mentioned — requires organizer review.")
+    if any(w in reply_lower for w in ["nda", "agreement", "contract", "terms"]):
+        extracted["conditions"].append("Legal/contractual terms mentioned — requires organizer review.")
+
+    # ---- Update speaker or sponsor record ----
+    updated_record = None
+    record_type = "unknown"
+
+    # Try speakers first
+    c.execute("SELECT * FROM speakers WHERE event_id = ? AND name LIKE ?", (event_id, f"%{contact_name}%"))
+    row = c.fetchone()
+    if row:
+        record_type = "speaker"
+        new_status = "confirmed" if extracted["interest_level"] == "interested" else "declined" if extracted["interest_level"] == "declined" else row["status"]
+        c.execute("UPDATE speakers SET status = ? WHERE id = ?", (new_status, row["id"]))
+        updated_record = {"type": "speaker", "id": row["id"], "name": row["name"], "new_status": new_status}
+    else:
+        # Try sponsors
+        c.execute("SELECT * FROM sponsors WHERE event_id = ? AND name LIKE ?", (event_id, f"%{contact_name}%"))
+        row = c.fetchone()
+        if row:
+            record_type = "sponsor"
+            new_status = "confirmed" if extracted["interest_level"] == "interested" else "declined" if extracted["interest_level"] == "declined" else row["status"]
+            c.execute("UPDATE sponsors SET status = ? WHERE id = ?", (new_status, row["id"]))
+            updated_record = {"type": "sponsor", "id": row["id"], "name": row["name"], "new_status": new_status}
+        else:
+            # Auto-create speaker candidate with confirmed/interested status
+            record_type = "speaker"
+            spk_id = f"spk-{uuid.uuid4().hex[:6]}"
+            new_status = "confirmed" if extracted["interest_level"] == "interested" else "prospect"
+            topic = "Keynote / Technical Session"
+            if extracted.get("topic_confirmed"):
+                m_topic = re.search(r'(?:topic|session|talk about|on)\s+([A-Za-z0-9\s\-]+?)(?:\.|\!|\,|$)', reply_text, flags=re.IGNORECASE)
+                if m_topic:
+                    topic = m_topic.group(1).strip()
+            c.execute(
+                "INSERT INTO speakers (id, event_id, name, org, topic, status, contact_email, proposed_time, bio) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (spk_id, event_id, contact_name, "Guest Keynote", topic, new_status, "", ", ".join(extracted["proposed_times"]) or "TBD", f"Dietary: {', '.join(extracted['dietary_needs']) or 'None specified'}")
+            )
+            updated_record = {"type": "speaker", "id": spk_id, "name": contact_name, "new_status": new_status}
+
+    # ---- Create follow-up tasks if needed ----
+    created_tasks = []
+    if extracted["interest_level"] == "interested" and record_type == "speaker":
+        task_id = f"tsk-{uuid.uuid4().hex[:6]}"
+        c.execute(
+            "INSERT INTO tasks (id, event_id, title, owner, category, deadline, status, dependencies) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (task_id, event_id, f"Finalize details with {contact_name} (confirmed speaker)", "Operations Lead", "Outreach", "2026-11-08", "todo", "None")
+        )
+        created_tasks.append({"task_id": task_id, "title": f"Finalize details with {contact_name}"})
+
+    if extracted["conditions"]:
+        task_id = f"tsk-{uuid.uuid4().hex[:6]}"
+        c.execute(
+            "INSERT INTO tasks (id, event_id, title, owner, category, deadline, status, dependencies) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (task_id, event_id, f"Review conditions from {contact_name}: {'; '.join(extracted['conditions'][:2])}", "Operations Lead", "Outreach", "2026-11-05", "todo", "None")
+        )
+        created_tasks.append({"task_id": task_id, "title": f"Review conditions from {contact_name}"})
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "contact_name": contact_name,
+        "record_type": record_type,
+        "extracted": extracted,
+        "updated_record": updated_record,
+        "created_tasks": created_tasks,
+        "summary": (
+            f"Processed reply from {contact_name}: interest={extracted['interest_level']}, "
+            f"topic_confirmed={extracted['topic_confirmed']}, "
+            f"dietary={extracted['dietary_needs'] or 'none specified'}, "
+            f"conditions={len(extracted['conditions'])} flagged."
+        )
+    }
+
+
+def tool_record_sponsor_commitment(
+    sponsor_name: str,
+    tier: str = "Silver",
+    amount: float = 1500.0,
+    benefits_agreed: str = "",
+    notes: str = "",
+    event_id: str = "evt-dubhacks-2026"
+) -> dict[str, Any]:
+    """Record a confirmed sponsor pledge with tier, amount, and agreed benefits (O2/O3)."""
+    conn = get_connection()
+    c = conn.cursor()
+
+    # Try to find existing sponsor record
+    c.execute("SELECT * FROM sponsors WHERE event_id = ? AND name LIKE ?", (event_id, f"%{sponsor_name}%"))
+    row = c.fetchone()
+
+    if row:
+        # Update existing sponsor
+        full_notes = f"{row['notes'] or ''}; Commitment confirmed: {benefits_agreed}. {notes}".strip("; ")
+        c.execute(
+            "UPDATE sponsors SET tier = ?, amount = ?, status = 'confirmed', notes = ? WHERE id = ?",
+            (tier, float(amount), full_notes, row["id"])
+        )
+        sponsor_id = row["id"]
+    else:
+        # Create new sponsor record
+        sponsor_id = f"spn-{uuid.uuid4().hex[:6]}"
+        full_notes = f"Commitment confirmed: {benefits_agreed}. {notes}".strip()
+        c.execute(
+            "INSERT INTO sponsors (id, event_id, name, tier, amount, status, contact_email, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (sponsor_id, event_id, sponsor_name, tier, float(amount), "confirmed", "", full_notes)
+        )
+
+    # Create fulfillment task
+    task_id = f"tsk-{uuid.uuid4().hex[:6]}"
+    c.execute(
+        "INSERT INTO tasks (id, event_id, title, owner, category, deadline, status, dependencies) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (task_id, event_id, f"Fulfill {tier} sponsor benefits for {sponsor_name} (${amount:,.0f})", "Operations Lead", "Outreach", "2026-11-10", "todo", "None")
+    )
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "status": "commitment_recorded",
+        "sponsor_id": sponsor_id,
+        "sponsor_name": sponsor_name,
+        "tier": tier,
+        "amount": amount,
+        "benefits_agreed": benefits_agreed,
+        "fulfillment_task_id": task_id,
+        "notes": full_notes
+    }
+
+
+def tool_check_outreach_followups(
+    event_id: str = "evt-dubhacks-2026",
+    days_threshold: int = 3
+) -> dict[str, Any]:
+    """Identify stalled outreach candidates and pending actions that need follow-up (O3).
+    Returns speakers in 'shortlist' or 'contacted' status and sponsors in 'pipeline' or 'discussion'
+    that haven't been confirmed, plus any stale pending action proposals.
+    """
+    conn = get_connection()
+    c = conn.cursor()
+
+    # Stalled speakers (not yet confirmed or declined)
+    c.execute(
+        "SELECT * FROM speakers WHERE event_id = ? AND status IN ('shortlist', 'contacted')",
+        (event_id,)
+    )
+    stalled_speakers = [dict(r) for r in c.fetchall()]
+
+    # Stalled sponsors
+    c.execute(
+        "SELECT * FROM sponsors WHERE event_id = ? AND status IN ('pipeline', 'discussion')",
+        (event_id,)
+    )
+    stalled_sponsors = [dict(r) for r in c.fetchall()]
+
+    # Pending action proposals (drafts awaiting approval)
+    c.execute(
+        "SELECT * FROM action_proposals WHERE event_id = ? AND status = 'pending_approval'",
+        (event_id,)
+    )
+    pending_actions = [dict(r) for r in c.fetchall()]
+
+    conn.close()
+
+    # Build follow-up suggestions
+    followup_suggestions = []
+    for s in stalled_speakers:
+        followup_suggestions.append({
+            "type": "speaker_followup",
+            "name": s["name"],
+            "org": s["org"],
+            "current_status": s["status"],
+            "contact_email": s.get("contact_email", ""),
+            "suggested_action": f"Send a friendly follow-up to {s['name']} ({s['org']}) regarding their {s['topic']} presentation. Current status: {s['status']}."
+        })
+
+    for sp in stalled_sponsors:
+        followup_suggestions.append({
+            "type": "sponsor_followup",
+            "name": sp["name"],
+            "tier": sp["tier"],
+            "current_status": sp["status"],
+            "contact_email": sp.get("contact_email", ""),
+            "suggested_action": f"Follow up with {sp['name']} on {sp['tier']} tier sponsorship (${sp['amount']:,.0f}). Current status: {sp['status']}."
+        })
+
+    return {
+        "event_id": event_id,
+        "days_threshold": days_threshold,
+        "stalled_speakers": len(stalled_speakers),
+        "stalled_sponsors": len(stalled_sponsors),
+        "pending_actions": len(pending_actions),
+        "followup_suggestions": followup_suggestions,
+        "pending_action_details": [{"id": a["id"], "title": a["title"], "action_type": a["action_type"]} for a in pending_actions],
+        "summary": (
+            f"Found {len(stalled_speakers)} speakers and {len(stalled_sponsors)} sponsors needing follow-up, "
+            f"plus {len(pending_actions)} pending action proposals awaiting organizer approval."
+        )
+    }
+
