@@ -109,3 +109,26 @@ Gurt provides an independent, clean user experience inspired by top modern AI in
 - **Model Selector Dropdown:** Seamlessly switch between **Gemini 3.8 Flash (Default)**, **Gemini 3.0 Flash Preview**, **Grok 2 (xAI)**, and the offline **Dynamic Semantic Engine** directly from the header without server restarts.
 - **Persistent Organizer Memory:** Store custom rules, dietary constraints, and preferences (e.g., *"Always order 20% certified vegan boxed meals"*). Stored memories are dynamically injected into Gurt's system instructions and persist across all chats.
 
+---
+
+## 7. Activity API Contract
+
+`GET /api/activity?event_id=evt-dubhacks-2026&limit=50` returns the newest activity for the requested event only. `limit` is optional, defaults to 50, and must be between 1 and 200.
+
+Each response entry has this shape:
+
+```json
+{
+   "id": "aud-123abc",
+   "event_id": "evt-dubhacks-2026",
+   "run_id": "run-123abc456def",
+   "timestamp": "2026-10-18T12:00:00",
+   "action": "agent_run",
+   "status": "succeeded",
+   "summary": "Agent run completed using gemini; provider status: provider_success.",
+   "affected_record_ids": []
+}
+```
+
+Statuses include `starting`, `succeeded`, `failed`, `pending_approval`, `simulated`, and `unknown`. Tool entries use the tool name as `action`; run lifecycle entries use `agent_run`. Summaries do not contain prompts, credentials, authorization headers, or raw exception messages. `succeeded` means the run/action step completed, not that an external message was delivered; simulated outcomes explicitly say delivery is unverified. The existing `GET /api/logistics/audit-logs` endpoint remains available with its original response format.
+

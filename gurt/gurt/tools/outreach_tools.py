@@ -634,9 +634,22 @@ def tool_approve_outreach(
 
     action = dict(row)
     if action["status"] == "executed":
+        log_audit_event(
+            event_id=action.get("event_id", "evt-dubhacks-2026"),
+            actor_id="gurt_agent",
+            action="approved_action_execution",
+            target_type="activity",
+            target_id=action_id,
+            details={
+                "status": "failed",
+                "summary": "Approved action execution was rejected because it was not pending approval.",
+                "affected_record_ids": [action_id]
+            }
+        )
         return {
             "error": f"Action {action_id} is already in state '{action['status']}'. Only pending actions can be approved."
         }
+
     if action["status"] == "dismissed":
         return {
             "error": f"Cannot approve dismissed action {action_id}."
@@ -972,6 +985,29 @@ def execute_approved_action(
             "delivery_mode": delivery_mode,
             "is_real_sent": is_real_sent,
             "provider": execution_result.get("provider")
+        }
+    )
+
+    provider_status = execution_result.get("status")
+    if provider_status in ("recorded_delivery", "delivered_to_outbox", "simulated delivery"):
+        activity_status = "simulated"
+        activity_summary = "Approved action was recorded by a simulator; delivery is not verified."
+    elif provider_status in ("sent", "real provider accepted"):
+        activity_status = "succeeded"
+        activity_summary = "Approved action was accepted by the configured provider; delivery is not verified."
+    else:
+        activity_status = "unknown"
+        activity_summary = "Approved action execution returned an unverified outcome."
+    log_audit_event(
+        event_id=action.get("event_id", "evt-dubhacks-2026"),
+        actor_id="gurt_agent",
+        action="approved_action_execution",
+        target_type="activity",
+        target_id=action_id,
+        details={
+            "status": activity_status,
+            "summary": activity_summary,
+            "affected_record_ids": [action_id]
         }
     )
 

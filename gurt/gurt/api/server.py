@@ -8,6 +8,8 @@ action center approvals, run-of-show schedule, and PDF form filling.
 from __future__ import annotations
 
 import os
+import re
+import uuid
 from pathlib import Path
 from typing import Any
 from fastapi import FastAPI, HTTPException, Query
@@ -43,7 +45,8 @@ from gurt.db import (
     save_memory,
     delete_memory,
     get_audit_logs,
-    get_action_proposal
+    get_action_proposal,
+    log_audit_event
 )
 from gurt.orchestrator import run_orchestrator
 from gurt.tools.outreach_tools import (
@@ -326,6 +329,97 @@ class BriefingGenerateRequest(BaseModel):
     event_id: str = "evt-dubhacks-2026"
 
 
+def _activity_status(value: Any) -> str:
+    status = str(value or "unknown").lower()
+    if status in {"starting", "pending_approval", "simulated", "unknown"}:
+        return status
+    return {
+        "success": "succeeded",
+        "succeeded": "succeeded",
+        "executed": "succeeded",
+        "failure": "failed",
+        "failed": "failed",
+        "error": "failed",
+        "pending_approval": "pending_approval",
+        "simulated": "simulated",
+        "unknown": "unknown"
+    }.get(status, "unknown")
+
+
+def _activity_record_ids(value: Any) -> list[str]:
+    id_keys = {"id", "action_id", "event_id", "task_id", "vendor_id", "speaker_id", "sponsor_id", "briefing_id", "pdf_document_id"}
+    found: list[str] = []
+
+    def visit(item: Any, depth: int = 0) -> None:
+        if depth > 4 or len(found) >= 20:
+            return
+        if isinstance(item, dict):
+            for key, child in item.items():
+                if key in id_keys and isinstance(child, (str, int)):
+                    record_id = str(child)
+                    if record_id and len(record_id) <= 120 and re.fullmatch(r"[A-Za-z0-9._:-]+", record_id) and record_id not in found:
+                        found.append(record_id)
+                elif isinstance(child, (dict, list)):
+                    visit(child, depth + 1)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child, depth + 1)
+
+    visit(value)
+    return found
+
+
+def _record_activity(
+    *,
+    event_id: str,
+    action: str,
+    status: str,
+    summary: str,
+    run_id: str | None = None,
+    affected_record_ids: list[str] | None = None,
+    details: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    safe_action = re.sub(r"[^A-Za-z0-9_.:-]", "", action)[:80] or "unknown"
+    safe_details = {
+        "run_id": run_id,
+        "status": _activity_status(status),
+        "summary": summary,
+        "affected_record_ids": affected_record_ids or []
+    }
+    if details:
+        safe_details.update(details)
+    return log_audit_event(
+        event_id=event_id,
+        actor_id="gurt_agent",
+        action=safe_action,
+        target_type="activity",
+        target_id=run_id or (affected_record_ids or [safe_action])[0],
+        details=safe_details
+    )
+
+
+def _record_tool_activity(event_id: str, run_id: str, tool_call: dict[str, Any]) -> None:
+    tool_name = re.sub(r"[^A-Za-z0-9_.:-]", "", str(tool_call.get("tool") or "unknown"))[:80] or "unknown"
+    status = _activity_status(tool_call.get("status"))
+    label = tool_name.replace("_", " ").replace(".", " ").capitalize()
+    summaries = {
+        "succeeded": f"{label} completed; external delivery is not implied.",
+        "failed": f"{label} failed.",
+        "pending_approval": f"{label} is awaiting approval.",
+        "simulated": f"{label} was simulated; delivery is not verified.",
+        "unknown": f"{label} outcome could not be verified."
+    }
+    output = tool_call.get("output")
+    _record_activity(
+        event_id=event_id,
+        action=tool_name,
+        status=status,
+        summary=summaries[status],
+        run_id=run_id,
+        affected_record_ids=_activity_record_ids(output)
+    )
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
     return {
@@ -462,12 +556,50 @@ def chat(req: ChatRequest) -> dict[str, Any]:
         content=req.message
     )
 
-    # Run orchestrator
-    resp = run_orchestrator(
-        req.message,
-        history,
+    run_id = f"run-{uuid.uuid4().hex[:12]}"
+    _record_activity(
         event_id=req.event_id,
-        model_name=req.model
+        action="agent_run",
+        status="starting",
+        summary="Agent run started.",
+        run_id=run_id
+    )
+
+    try:
+        resp = run_orchestrator(
+            req.message,
+            history,
+            event_id=req.event_id,
+            model_name=req.model
+        )
+    except Exception as exc:
+        _record_activity(
+            event_id=req.event_id,
+            action="agent_run",
+            status="failed",
+            summary="Agent run failed; error details were omitted.",
+            run_id=run_id,
+            details={"error_type": type(exc).__name__}
+        )
+        raise
+
+    resp.setdefault("provider_status", "provider_failure")
+    resp.setdefault("execution_mode", "semantic_fallback")
+    resp["run_id"] = run_id
+
+    for tool_call in resp.get("tool_calls") or []:
+        if isinstance(tool_call, dict):
+            _record_tool_activity(req.event_id, run_id, tool_call)
+
+    provider_status = resp["provider_status"]
+    execution_mode = resp["execution_mode"]
+    _record_activity(
+        event_id=req.event_id,
+        action="agent_run",
+        status="succeeded",
+        summary=f"Agent run completed using {execution_mode}; provider status: {provider_status}.",
+        run_id=run_id,
+        details={"provider_status": provider_status, "execution_mode": execution_mode}
     )
 
     # Save assistant turn into SQLite
@@ -913,6 +1045,28 @@ def get_audit_logs_endpoint(
     limit: int = Query(50)
 ) -> list[dict[str, Any]]:
     return get_audit_logs(event_id=event_id, limit=limit)
+
+
+@app.get("/api/activity")
+def get_activity_endpoint(
+    event_id: str = Query("evt-dubhacks-2026"),
+    limit: int = Query(50, ge=1, le=200)
+) -> list[dict[str, Any]]:
+    """Return normalized operational activity for one event only."""
+    entries = get_audit_logs(event_id=event_id, limit=limit)
+    return [
+        {
+            "id": entry["id"],
+            "event_id": entry["event_id"],
+            "run_id": entry.get("details", {}).get("run_id"),
+            "timestamp": entry["created_at"],
+            "action": entry["action"],
+            "status": entry.get("details", {}).get("status", "unknown"),
+            "summary": entry.get("details", {}).get("summary", "Activity recorded."),
+            "affected_record_ids": entry.get("details", {}).get("affected_record_ids", [])
+        }
+        for entry in entries
+    ]
 
 
 # Mount static assets

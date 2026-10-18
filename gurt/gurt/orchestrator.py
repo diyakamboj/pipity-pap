@@ -1351,36 +1351,89 @@ def run_orchestrator(
     history = conversation_history or []
     system_prompt = get_system_instruction(event_id)
 
+    def annotate(resp: dict[str, Any], *, provider_status: str, execution_mode: str) -> dict[str, Any]:
+        payload = dict(resp)
+        payload.setdefault("text", "")
+        payload.setdefault("tool_calls", [])
+        payload.setdefault("model_used", "unknown")
+
+        tool_calls = payload.get("tool_calls") or []
+        normalized_tool_calls = []
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                normalized_tool_calls.append(tc)
+                continue
+            item = dict(tc)
+            tool_output = item.get("output")
+            status = item.get("status")
+            if status is None:
+                if isinstance(tool_output, dict):
+                    if tool_output.get("error") or tool_output.get("exception"):
+                        status = "failure"
+                    elif tool_output.get("status") in {"pending_approval", "approved", "executed", "failed", "error", "simulated", "unknown", "not_applicable"}:
+                        status = str(tool_output["status"]).lower()
+                    elif tool_output.get("status") in {
+                        "created", "added", "updated", "saved", "generated", "draft_ready",
+                        "recorded_in_pipeline", "updated_in_pipeline", "added_to_shortlist",
+                        "updated_shortlist", "commitment_recorded", "switched", "no_quotes_found",
+                        "success", "completed"
+                    }:
+                        status = "success"
+                    elif tool_output.get("status") in {"recorded_delivery", "delivered_to_outbox"}:
+                        status = "simulated"
+                    elif tool_output.get("action_id"):
+                        status = "pending_approval"
+                    elif tool_output.get("simulated") is True or tool_output.get("is_simulated") is True:
+                        status = "simulated"
+                    else:
+                        status = "unknown"
+                elif tool_output is None:
+                    status = "unknown"
+                else:
+                    status = "unknown"
+            item["status"] = status
+            normalized_tool_calls.append(item)
+        payload["tool_calls"] = normalized_tool_calls
+        payload["provider_status"] = provider_status
+        payload["execution_mode"] = execution_mode
+        return payload
+
     # 1. Direct offline semantic engine option
     if model_name in ("semantic-engine", "gurt-semantic-engine"):
-        return dynamic_semantic_executor(user_message, conversation_history=history, event_id=event_id)
+        resp = dynamic_semantic_executor(user_message, conversation_history=history, event_id=event_id)
+        return annotate(resp, provider_status="not_used", execution_mode="semantic_fallback")
 
     # 2. Grok / xAI model option
-    if model_name and "grok" in model_name.lower() and settings.grok_api_key and not settings.grok_api_key.startswith("grok_dummy"):
-        try:
-            messages = [{"role": "system", "content": system_prompt}]
-            for h in history[-4:]:
-                messages.append({"role": "user" if h.get("role") == "user" else "assistant", "content": h.get("content", "")})
-            messages.append({"role": "user", "content": user_message})
+    if model_name and "grok" in model_name.lower():
+        if settings.grok_api_key and not settings.grok_api_key.startswith("grok_dummy"):
+            try:
+                messages = [{"role": "system", "content": system_prompt}]
+                for h in history[-4:]:
+                    messages.append({"role": "user" if h.get("role") == "user" else "assistant", "content": h.get("content", "")})
+                messages.append({"role": "user", "content": user_message})
 
-            grok_res = requests.post(
-                "https://api.x.ai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {settings.grok_api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={"model": "grok-2-latest", "messages": messages, "temperature": 0.3},
-                timeout=10.0
-            )
-            if grok_res.status_code == 200:
-                ans = grok_res.json()["choices"][0]["message"]["content"]
-                return {
-                    "text": ans,
-                    "tool_calls": [],
-                    "model_used": "xai/grok-2-latest"
-                }
-        except Exception:
-            pass
+                grok_res = requests.post(
+                    "https://api.x.ai/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {settings.grok_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={"model": "grok-2-latest", "messages": messages, "temperature": 0.3},
+                    timeout=10.0
+                )
+                if grok_res.status_code == 200:
+                    ans = grok_res.json()["choices"][0]["message"]["content"]
+                    if isinstance(ans, str) and ans.strip():
+                        return annotate({
+                            "text": ans,
+                            "tool_calls": [],
+                            "model_used": "xai/grok-2-latest"
+                        }, provider_status="provider_success", execution_mode="grok")
+            except Exception:
+                pass
+
+        fallback = dynamic_semantic_executor(user_message, conversation_history=history, event_id=event_id)
+        return annotate(fallback, provider_status="provider_failure", execution_mode="semantic_fallback")
 
     # 3. Gemini models
     api_key = settings.gemini_api_key
@@ -1467,34 +1520,35 @@ def run_orchestrator(
                         cand2 = r2.json().get("candidates", [{}])[0]
                         text2 = cand2.get("content", {}).get("parts", [{}])[0].get("text", "")
                         if text2:
-                            resp_dict = {
+                            resp_dict = annotate({
                                 "text": text2,
                                 "tool_calls": executed_tools,
                                 "model_used": f"gemini/{m_name}"
-                            }
+                            }, provider_status="provider_success", execution_mode="gemini")
                             if switched_id:
                                 resp_dict["switched_event_id"] = switched_id
                             return resp_dict
 
                     formatted_text = format_tool_execution_response(executed_tools, event_id=switched_id or event_id)
-                    resp_dict = {
+                    resp_dict = annotate({
                         "text": formatted_text,
                         "tool_calls": executed_tools,
                         "model_used": f"gemini/{m_name}"
-                    }
+                    }, provider_status="provider_success", execution_mode="gemini")
                     if switched_id:
                         resp_dict["switched_event_id"] = switched_id
                     return resp_dict
 
                 text_part = next((p.get("text") for p in parts if "text" in p), None)
                 if text_part:
-                    return {
+                    return annotate({
                         "text": text_part,
                         "tool_calls": [],
                         "model_used": f"gemini/{m_name}"
-                    }
+                    }, provider_status="provider_success", execution_mode="gemini")
 
             except Exception:
                 continue
 
-    return dynamic_semantic_executor(user_message, conversation_history=history, event_id=event_id)
+    fallback = dynamic_semantic_executor(user_message, conversation_history=history, event_id=event_id)
+    return annotate(fallback, provider_status="provider_failure", execution_mode="semantic_fallback")
