@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gurt — Event Operations Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="brand-badge">
+          <div class="brand-avatar">🧃</div>
+          <div class="brand-info">
+            <div class="brand-title-row">
+              <h1>Gurt</h1>
+              <span class="version-tag">v2.0 • Live Agent</span>
+            </div>
+            <span class="subtitle">Autonomous Event Operations</span>
+          </div>
+        </div>
+
+        <div class="event-pill">
+          <span class="event-dot"></span>
+          <div class="event-details">
+            <span class="event-name">DubHacks 2026 Agentic AI Workshop</span>
+            <span class="event-meta">Nov 15, 2026 • UW HUB Ballroom • 80 Attendees</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="header-right">
+        <!-- Live Quick Stats -->
+        <div class="stat-capsule" id="stat-capsule">
+          <div class="stat-item">
+            <span class="stat-label">Budget</span>
+            <span class="stat-val" id="stat-budget">$2,500</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat-item">
+            <span class="stat-label">Tasks</span>
+            <span class="stat-val" id="stat-tasks">0/0</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat-item">
+            <span class="stat-label">Speakers</span>
+            <span class="stat-val" id="stat-speakers">0/0</span>
+          </div>
+        </div>
+
+        <div class="status-indicator">
+          <span class="pulse-dot"></span>
+          <span id="model-badge">Gemini 3 Flash • Online</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <main class="workspace-grid">
+      <!-- Left: Chat Panel -->
+      <section class="chat-panel">
+        <div class="chat-header">
+          <div class="chat-header-title">
+            <h2>Operations Terminal</h2>
+            <span class="live-dot"></span>
+          </div>
+          <button class="btn-ghost" onclick="clearHistory()" title="Clear chat history">Reset Chat</button>
+        </div>
+
+        <div class="chat-messages" id="chat-messages">
+          <!-- Initial Welcome Message -->
+          <div class="message assistant">
+            <div class="msg-avatar">🧃</div>
+            <div class="msg-body">
+              <p><strong>Yo! I'm Gurt</strong>, your autonomous event operations agent for the <strong>DubHacks 2026 Workshop</strong>.</p>
+              <p>I have live access to our <strong>event database</strong>, real-time <strong>web research (Tavily)</strong>, and our <strong>Human-in-the-Loop Action Center</strong>. I help you across:</p>
+              <ul>
+                <li><strong>Outreach:</strong> Researching speakers & sponsors, drafting invites, and tracking confirmations.</li>
+                <li><strong>Vendors:</strong> Comparing catering quotes ($12–$17/head), badges, and supplier contracts against our $2,500 budget.</li>
+                <li><strong>Logistics:</strong> Managing the run-of-show checklist, task dependencies, and assigning owners.</li>
+              </ul>
+              <p>What should we work on?</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Action Prompt Chips -->
+        <div class="prompt-chips">
+          <button class="chip" onclick="sendQuickPrompt('Draft an outreach invitation to Dr. Alicia Chen')">✉️ Draft speaker invite</button>
+          <button class="chip" onclick="sendQuickPrompt('Compare catering quotes under $15/head')">🥗 Compare catering</button>
+          <button class="chip" onclick="sendQuickPrompt('Add a task: Rent 3 wireless mics from UW AV by Nov 12')">➕ Add AV task</button>
+          <button class="chip" onclick="sendQuickPrompt('Show the run-of-show logistics task list')">📋 Run-of-show tasks</button>
+          <button class="chip" onclick="sendQuickPrompt('Who are our current confirmed sponsors?')">💎 Sponsor pipeline</button>
+        </div>
+
+        <!-- Chat Input Form -->
+        <form class="chat-input-bar" id="chat-form">
+          <input type="text" id="user-input" placeholder="Ask Gurt anything (e.g. 'Draft email to Marcus' or 'Add task')..." autocomplete="off">
+          <button type="submit" id="send-btn" class="send-button">
+            <span>Send</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </button>
+        </form>
+      </section>
+
+      <!-- Right: Operations Board -->
+      <section class="ops-panel">
+        <nav class="ops-tabs">
+          <button class="tab-btn active" data-tab="approvals">
+            Action Center <span class="badge badge-accent" id="approval-count">0</span>
+          </button>
+          <button class="tab-btn" data-tab="tasks">
+            Logistics Tasks <span class="badge" id="tasks-count">0</span>
+          </button>
+          <button class="tab-btn" data-tab="speakers">
+            Speakers <span class="badge" id="speakers-count">0</span>
+          </button>
+          <button class="tab-btn" data-tab="vendors">
+            Vendors <span class="badge" id="vendors-count">0</span>
+          </button>
+          <button class="tab-btn" data-tab="sponsors">
+            Sponsors <span class="badge" id="sponsors-count">0</span>
+          </button>
+        </nav>
+
+        <!-- Tab 1: Action Center / Approvals -->
+        <div class="tab-pane active" id="pane-approvals">
+          <div class="pane-header">
+            <div>
+              <h3>Human-in-the-Loop Action Center</h3>
+              <p class="pane-desc">Consequential actions (outreach emails, Slack broadcasts) require organizer approval before dispatch.</p>
+            </div>
+            <button class="btn-small" onclick="loadApprovals()">↻ Refresh</button>
+          </div>
+          <div class="cards-list" id="approvals-list">
+            <div class="loading-state">Loading action center...</div>
+          </div>
+        </div>
+
+        <!-- Tab 2: Logistics Tasks -->
+        <div class="tab-pane" id="pane-tasks">
+          <div class="pane-header">
+            <div>
+              <h3>Logistics & Run-of-Show Tasks</h3>
+              <p class="pane-desc">Click status badges to toggle progress (Todo ➔ In Progress ➔ Done).</p>
+            </div>
+            <button class="btn-small btn-primary" onclick="openAddTaskModal()">+ New Task</button>
+          </div>
+          <div class="cards-list" id="tasks-list">
+            <div class="loading-state">Loading tasks...</div>
+          </div>
+        </div>
+
+        <!-- Tab 3: Speakers -->
+        <div class="tab-pane" id="pane-speakers">
+          <div class="pane-header">
+            <div>
+              <h3>Speaker Lineup & Shortlist</h3>
+              <p class="pane-desc">Keynotes, workshops, time slots, and outreach status.</p>
+            </div>
+            <button class="btn-small" onclick="loadSpeakers()">↻ Refresh</button>
+          </div>
+          <div class="cards-list" id="speakers-list">
+            <div class="loading-state">Loading speakers...</div>
+          </div>
+        </div>
+
+        <!-- Tab 4: Vendors -->
+        <div class="tab-pane" id="pane-vendors">
+          <div class="pane-header">
+            <div>
+              <h3>Vendor Quotes & Catering Comparison</h3>
+              <p class="pane-desc">Assessed against the 80-attendee headcount and $2,500 budget.</p>
+            </div>
+            <button class="btn-small btn-primary" onclick="openAddVendorModal()">+ Add Quote</button>
+          </div>
+          <div class="cards-list" id="vendors-list">
+            <div class="loading-state">Loading vendors...</div>
+          </div>
+        </div>
+
+        <!-- Tab 5: Sponsors -->
+        <div class="tab-pane" id="pane-sponsors">
+          <div class="pane-header">
+            <div>
+              <h3>Sponsorship Pipeline</h3>
+              <p class="pane-desc">Tracking pledged tiers, cloud credits, and mentor support.</p>
+            </div>
+            <button class="btn-small" onclick="loadSponsors()">↻ Refresh</button>
+          </div>
+          <div class="cards-list" id="sponsors-list">
+            <div class="loading-state">Loading sponsors...</div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Modal: Add Task -->
+  <div class="modal-overlay" id="task-modal" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Log New Logistics Task</h3>
+        <button class="close-btn" onclick="closeModal('task-modal')">&times;</button>
+      </div>
+      <form id="add-task-form" onsubmit="handleCreateTask(event)">
+        <div class="form-group">
+          <label>Task Title</label>
+          <input type="text" id="modal-task-title" required placeholder="e.g. Set up registration badges at HUB desk">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Owner</label>
+            <input type="text" id="modal-task-owner" required value="Operations Lead">
+          </div>
+          <div class="form-group">
+            <label>Category</label>
+            <select id="modal-task-category">
+              <option value="Logistics">Logistics</option>
+              <option value="Outreach">Outreach</option>
+              <option value="Vendors">Vendors</option>
+              <option value="Tech">Tech & AV</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Deadline</label>
+            <input type="date" id="modal-task-deadline" value="2026-11-10">
+          </div>
+          <div class="form-group">
+            <label>Dependencies</label>
+            <input type="text" id="modal-task-deps" value="None" placeholder="e.g. tsk-001 or None">
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" onclick="closeModal('task-modal')">Cancel</button>
+          <button type="submit" class="btn-primary">Create Task</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Add Vendor -->
+  <div class="modal-overlay" id="vendor-modal" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Record Vendor Quote</h3>
+        <button class="close-btn" onclick="closeModal('vendor-modal')">&times;</button>
+      </div>
+      <form id="add-vendor-form" onsubmit="handleCreateVendor(event)">
+        <div class="form-group">
+          <label>Company / Supplier Name</label>
+          <input type="text" id="modal-vendor-name" required placeholder="e.g. Seattle Gourmet Grain Bowls">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Category</label>
+            <select id="modal-vendor-category">
+              <option value="Catering">Catering</option>
+              <option value="Badges & Swag">Badges & Swag</option>
+              <option value="AV & Tech">AV & Tech</option>
+              <option value="Signage">Signage</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Total Quote ($)</label>
+            <input type="number" step="0.5" id="modal-vendor-amount" required value="950">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Price Per Head ($)</label>
+            <input type="number" step="0.1" id="modal-vendor-perhead" value="11.87">
+          </div>
+          <div class="form-group">
+            <label>Contact Email</label>
+            <input type="email" id="modal-vendor-email" placeholder="orders@supplier.example">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Menu & Dietary Details</label>
+          <textarea id="modal-vendor-details" rows="2" placeholder="Dietary restrictions: Vegan, Nut-Free, Gluten-Free options included."></textarea>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn-ghost" onclick="closeModal('vendor-modal')">Cancel</button>
+          <button type="submit" class="btn-primary">Save Quote</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
